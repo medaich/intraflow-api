@@ -1,34 +1,66 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
-import { UsersService } from './users.service';
-import { CreateUserDto } from './dto/create-user.dto';
-import { UpdateUserDto } from './dto/update-user.dto';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseIntPipe,
+  Patch,
+  Post,
+  UseGuards,
+} from "@nestjs/common";
+import { CurrentUser } from "./decorators/current-user.decorator";
+import { UpdateUserDto } from "./dto/update-user.dto";
+import { UsersService } from "./users.service";
+import { User } from "./entities/user.entity";
+import { AuthGuard } from "src/guards/auth.guard";
+import { AdminGuard } from "src/guards/admin-auth.guard";
+import { InviteDto } from "./dto/invite.dto";
 
-@Controller('users')
+@UseGuards(AuthGuard)
+@Controller("users")
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
-  @Post()
-  create(@Body() createUserDto: CreateUserDto) {
-    return this.usersService.create(createUserDto);
-  }
-
+  @UseGuards(AdminGuard)
   @Get()
-  findAll() {
+  async findAll() {
     return this.usersService.findAll();
   }
 
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.usersService.findOne(+id);
+  @UseGuards(AdminGuard)
+  @Post("invite")
+  async invite(@Body() inviteDto: InviteDto) {
+    return this.usersService.invite(inviteDto.email);
   }
 
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() updateUserDto: UpdateUserDto) {
-    return this.usersService.update(+id, updateUserDto);
+  @UseGuards(AdminGuard)
+  @Get(":userId")
+  async findOne(@Param("userId", ParseIntPipe) userId: number) {
+    const user = await this.usersService.findOne({ userId });
+    return { ...user, password: undefined };
   }
 
-  @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.usersService.remove(+id);
+  @UseGuards(AdminGuard)
+  @Delete(":userId")
+  async remove(@Param("userId", ParseIntPipe) userId: number) {
+    await this.usersService.remove(userId);
+  }
+
+  @Get("me")
+  getCurrentUser(@CurrentUser() currentUser: User) {
+    return currentUser;
+  }
+
+  @Patch("me")
+  async update(
+    @Body() updateUserDto: UpdateUserDto,
+    @CurrentUser() user: User,
+  ) {
+    await this.usersService.update(user.userId, updateUserDto);
+    const updatedUser = await this.usersService.findOne({
+      userId: user.userId,
+    });
+    return { ...updatedUser, password: undefined };
   }
 }
