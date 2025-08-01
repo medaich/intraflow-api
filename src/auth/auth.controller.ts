@@ -38,7 +38,9 @@ export class AuthController {
     }
   }
 
-  /* @Post("signuptest")
+  /*
+  allow signup in dev mode
+  @Post("signupdev")
   async signupTest(@Body() signupDto: CreateUserDto) {
     const user = await this.authService.signup(signupDto);
     return user

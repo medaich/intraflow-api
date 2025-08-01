@@ -13,6 +13,7 @@ import { CreateTaskDto } from "./dto/create-task.dto";
 import { TaskResponseDto } from "./dto/task-response.dto";
 import { UpdateTaskDto } from "./dto/update-task.dto";
 import { Task, TaskStatus } from "./entities/task.entity";
+import { Comment } from "./entities/comment.entity";
 
 @Injectable()
 export class TasksService {
@@ -21,6 +22,9 @@ export class TasksService {
 
   @InjectRepository(User)
   private readonly usersRepo: Repository<User>;
+
+  @InjectRepository(Comment)
+  private readonly commentRepo: Repository<Comment>;
 
   async create(createTaskDto: CreateTaskDto) {
     return this.tasksRepo.save(createTaskDto);
@@ -159,6 +163,120 @@ export class TasksService {
     } catch (error) {
       if (error instanceof HttpException) throw error;
       else throw new InternalServerErrorException();
+    }
+  }
+
+  async getMyTaskComments(
+    taskId: number,
+    userId: number,
+    isAdmin: boolean = false,
+  ) {
+    try {
+      if (isAdmin) await this.findOne(taskId);
+      else await this.getMytask(taskId, userId);
+
+      const comments = await this.commentRepo.find({
+        where: {
+          task: { taskId },
+        },
+        relations: ["user"],
+        select: {
+          content: true,
+          createdAt: true,
+          updatedAt: true,
+          user: {
+            userId: true,
+            name: true,
+          },
+        },
+        order: {
+          createdAt: "ASC",
+        },
+      });
+      return comments;
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      else throw new InternalServerErrorException();
+    }
+  }
+
+  async comment(
+    taskId: number,
+    userId: number,
+    content: string,
+    isAdmin: boolean = false,
+  ) {
+    try {
+      if (isAdmin) await this.findOne(taskId);
+      else await this.getMytask(taskId, userId);
+
+      const comment = new Comment({
+        content,
+        task: new Task({ taskId }),
+        user: new User({ userId }),
+      });
+      await this.commentRepo.save(comment);
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      else throw new InternalServerErrorException();
+    }
+  }
+
+  async getComment(commentId: number, userId: number, isAdmin = true) {
+    try {
+      if (!commentId || commentId < 0)
+        throw new BadRequestException("Invalid comment ID");
+
+      const comment = await this.commentRepo.findOne({
+        where: { commentId },
+        relations: ["user"],
+        select: {
+          commentId: true,
+          content: true,
+          createdAt: true,
+          updatedAt: true,
+          user: {
+            userId: true,
+            name: true,
+          },
+        },
+      });
+
+      if (!comment) throw new NotFoundException();
+
+      if (!isAdmin && comment.user?.userId !== userId)
+        throw new NotFoundException();
+
+      return comment;
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw new InternalServerErrorException();
+    }
+  }
+
+  async updateComment(commentId: number, userId: number, content: string) {
+    try {
+      const comment = await this.getComment(commentId, userId);
+      comment.content = content;
+      await this.commentRepo.update(commentId, comment);
+      return this.getComment(commentId, userId);
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw new InternalServerErrorException();
+    }
+  }
+
+  async removeComment(
+    commentId: number,
+    userId: number,
+    isAdmin: boolean = false,
+  ) {
+    try {
+      await this.getComment(commentId, userId, isAdmin);
+      await this.commentRepo.softDelete(commentId);
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw new InternalServerErrorException();
     }
   }
 }
