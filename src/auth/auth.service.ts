@@ -35,7 +35,7 @@ export class AuthService {
   async signin(signinDto: SigninDto) {
     const { email, password } = signinDto;
 
-    const user = await this.usersService.findOne({ email });
+    const user = await this.usersService.findByEmailWithPassword(email);
     if (!user) throw new NotFoundException();
 
     const { password: hashedSaltedPassword, ...currUser } = user;

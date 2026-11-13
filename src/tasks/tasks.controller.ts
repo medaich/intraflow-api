@@ -8,38 +8,50 @@ import {
   Patch,
   Post,
   Put,
-  Query,
   UseGuards,
 } from "@nestjs/common";
+import { plainToInstance } from "class-transformer";
 import { AdminGuard } from "src/guards/admin-auth.guard";
 import { AuthGuard } from "src/guards/auth.guard";
 import { CurrentUser } from "src/users/decorators/current-user.decorator";
 import { User } from "src/users/entities/user.entity";
 import { CreateTaskDto } from "./dto/create-task.dto";
 import { UpdateTaskDto } from "./dto/update-task.dto";
+import { TaskResponseDto } from "./dto/task-response.dto";
+import { AssignTaskDto } from "./dto/assign-task.dto";
 import { TasksService } from "./tasks.service";
 import { CreateCommentDto } from "./dto/create-comment.dto";
+import { Task } from "./entities/task.entity";
 
 @Controller("tasks")
 export class TasksController {
   constructor(private readonly tasksService: TasksService) {}
 
+  private toResponseDto(task: Task): TaskResponseDto {
+    return plainToInstance(TaskResponseDto, task, {
+      excludeExtraneousValues: true,
+    });
+  }
+
   @UseGuards(AdminGuard)
   @Post()
-  create(@Body() createTaskDto: CreateTaskDto) {
-    return this.tasksService.create(createTaskDto);
+  async create(@Body() createTaskDto: CreateTaskDto): Promise<TaskResponseDto> {
+    const task = await this.tasksService.create(createTaskDto);
+    return this.toResponseDto(task);
   }
 
   @UseGuards(AdminGuard)
   @Get()
-  async findAll() {
-    return this.tasksService.findAll();
+  async findAll(): Promise<TaskResponseDto[]> {
+    const tasks = await this.tasksService.findAll();
+    return tasks.map((task) => this.toResponseDto(task));
   }
 
   @UseGuards(AuthGuard)
   @Get("my-tasks")
-  async getMyTasks(@CurrentUser() user: User) {
-    return this.tasksService.findAll(user.userId);
+  async getMyTasks(@CurrentUser() user: User): Promise<TaskResponseDto[]> {
+    const tasks = await this.tasksService.findAll(user.userId);
+    return tasks.map((task) => this.toResponseDto(task));
   }
 
   @UseGuards(AuthGuard)
@@ -47,8 +59,9 @@ export class TasksController {
   async getMyTaskDetails(
     @CurrentUser() user: User,
     @Param("taskId", ParseIntPipe) taskId: number,
-  ) {
-    return this.tasksService.getMytask(taskId, user.userId);
+  ): Promise<TaskResponseDto> {
+    const task = await this.tasksService.getMytask(taskId, user.userId);
+    return this.toResponseDto(task);
   }
 
   @UseGuards(AuthGuard)
@@ -56,8 +69,9 @@ export class TasksController {
   async start(
     @CurrentUser() user: User,
     @Param("taskId", ParseIntPipe) taskId: number,
-  ) {
-    return this.tasksService.start(taskId, user.userId);
+  ): Promise<TaskResponseDto> {
+    const task = await this.tasksService.start(taskId, user.userId);
+    return this.toResponseDto(task);
   }
 
   @UseGuards(AuthGuard)
@@ -65,8 +79,9 @@ export class TasksController {
   async submit(
     @CurrentUser() user: User,
     @Param("taskId", ParseIntPipe) taskId: number,
-  ) {
-    return this.tasksService.submit(taskId, user.userId);
+  ): Promise<TaskResponseDto> {
+    const task = await this.tasksService.submit(taskId, user.userId);
+    return this.toResponseDto(task);
   }
 
   @UseGuards(AuthGuard)
@@ -82,10 +97,12 @@ export class TasksController {
   @Put("my-tasks/:taskId/comments/:commentId")
   async updateComment(
     @CurrentUser() user: User,
+    @Param("taskId", ParseIntPipe) taskId: number,
     @Param("commentId", ParseIntPipe) commentId: number,
     @Body() comment: CreateCommentDto,
   ) {
     return this.tasksService.updateComment(
+      taskId,
       commentId,
       user.userId,
       comment.content,
@@ -96,9 +113,15 @@ export class TasksController {
   @Delete("my-tasks/:taskId/comments/:commentId")
   async removeComment(
     @CurrentUser() user: User,
+    @Param("taskId", ParseIntPipe) taskId: number,
     @Param("commentId", ParseIntPipe) commentId: number,
   ) {
-    return this.tasksService.removeComment(commentId, user.userId);
+    return this.tasksService.removeComment(
+      taskId,
+      commentId,
+      user.userId,
+      false,
+    );
   }
 
   @UseGuards(AuthGuard)
@@ -113,8 +136,9 @@ export class TasksController {
 
   @UseGuards(AdminGuard)
   @Get(":taskId")
-  async findOne(@Param("taskId", ParseIntPipe) taskId: number) {
-    return this.tasksService.findOne(taskId);
+  async findOne(@Param("taskId", ParseIntPipe) taskId: number): Promise<TaskResponseDto> {
+    const task = await this.tasksService.findOne(taskId);
+    return this.toResponseDto(task);
   }
 
   @UseGuards(AdminGuard)
@@ -122,34 +146,39 @@ export class TasksController {
   async update(
     @Param("taskId", ParseIntPipe) taskId: number,
     @Body() updateTaskDto: UpdateTaskDto,
-  ) {
-    return this.tasksService.update(taskId, updateTaskDto);
+  ): Promise<TaskResponseDto> {
+    const task = await this.tasksService.update(taskId, updateTaskDto);
+    return this.toResponseDto(task);
   }
 
   @UseGuards(AdminGuard)
   @Delete(":taskId")
-  async remove(@Param("taskId", ParseIntPipe) taskId: number) {
-    return this.tasksService.remove(taskId);
+  async remove(@Param("taskId", ParseIntPipe) taskId: number): Promise<void> {
+    await this.tasksService.remove(taskId);
   }
 
   @UseGuards(AdminGuard)
   @Post(":taskId/assign")
   async assign(
     @Param("taskId", ParseIntPipe) taskId: number,
-    @Query("assignTo", ParseIntPipe) assignTo: number,
-  ) {
-    return this.tasksService.assign(taskId, assignTo);
+    @Body() assignTaskDto: AssignTaskDto,
+  ): Promise<TaskResponseDto> {
+    const task = await this.tasksService.assign(taskId, assignTaskDto.userId);
+    return this.toResponseDto(task);
   }
+
   @UseGuards(AdminGuard)
   @Post(":taskId/unassign")
-  async unassign(@Param("taskId", ParseIntPipe) taskId: number) {
-    return this.tasksService.unassign(taskId);
+  async unassign(@Param("taskId", ParseIntPipe) taskId: number): Promise<TaskResponseDto> {
+    const task = await this.tasksService.unassign(taskId);
+    return this.toResponseDto(task);
   }
 
   @UseGuards(AdminGuard)
   @Post(":taskId/validate")
-  async validate(@Param("taskId", ParseIntPipe) taskId: number) {
-    return this.tasksService.validate(taskId);
+  async validate(@Param("taskId", ParseIntPipe) taskId: number): Promise<TaskResponseDto> {
+    const task = await this.tasksService.validate(taskId);
+    return this.toResponseDto(task);
   }
 
   @UseGuards(AdminGuard)
@@ -180,8 +209,9 @@ export class TasksController {
   @Delete(":taskId/comments/:commentId")
   async removeCommentAsAdmin(
     @CurrentUser() user: User,
+    @Param("taskId", ParseIntPipe) taskId: number,
     @Param("commentId", ParseIntPipe) commentId: number,
   ) {
-    return this.tasksService.removeComment(commentId, user.userId, true);
+    return this.tasksService.removeComment(taskId, commentId, user.userId, true);
   }
 }

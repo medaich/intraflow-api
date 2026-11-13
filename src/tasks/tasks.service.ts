@@ -1,19 +1,17 @@
 import {
   BadRequestException,
-  HttpException,
+  ForbiddenException,
   Injectable,
-  InternalServerErrorException,
   NotFoundException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { plainToInstance } from "class-transformer";
 import { User } from "src/users/entities/user.entity";
 import { Repository } from "typeorm";
 import { CreateTaskDto } from "./dto/create-task.dto";
-import { TaskResponseDto } from "./dto/task-response.dto";
 import { UpdateTaskDto } from "./dto/update-task.dto";
 import { Task, TaskStatus } from "./entities/task.entity";
 import { Comment } from "./entities/comment.entity";
+import { assertTaskTransition } from "./task-state-machine";
 
 @Injectable()
 export class TasksService {
@@ -26,257 +24,225 @@ export class TasksService {
   @InjectRepository(Comment)
   private readonly commentRepo: Repository<Comment>;
 
-  async create(createTaskDto: CreateTaskDto) {
-    return this.tasksRepo.save(createTaskDto);
+  async create(createTaskDto: CreateTaskDto): Promise<Task> {
+    const task = new Task(createTaskDto);
+    return this.tasksRepo.save(task);
   }
 
-  async findAll(assignedToId?: number) {
-    const tasks = assignedToId
-      ? await this.tasksRepo.find({
+  async findAll(assignedToId?: number): Promise<Task[]> {
+    return assignedToId
+      ? this.tasksRepo.find({
           where: { assignedTo: { userId: assignedToId } },
+          relations: ["assignedTo"],
         })
-      : await this.tasksRepo.find();
+      : this.tasksRepo.find({ relations: ["assignedTo"] });
+  }
 
-    return plainToInstance(TaskResponseDto, tasks, {
-      excludeExtraneousValues: true,
+  async findOne(taskId: number): Promise<Task> {
+    const task = await this.tasksRepo.findOne({
+      where: { taskId },
+      relations: ["assignedTo"],
     });
-  }
-
-  async findOne(taskId: number) {
-    const task = await this.tasksRepo.findOneBy({ taskId });
-    if (!task) throw new NotFoundException();
-    return plainToInstance(TaskResponseDto, task, {
-      excludeExtraneousValues: true,
-    });
-  }
-
-  async update(taskId: number, updateTaskDto: UpdateTaskDto) {
-    try {
-      await this.findOne(taskId);
-      await this.tasksRepo.update(taskId, updateTaskDto);
-      return await this.findOne(taskId);
-    } catch (error) {
-      if (error instanceof HttpException) throw error;
-      else throw new InternalServerErrorException();
+    if (!task) {
+      throw new NotFoundException("Task not found");
     }
+    return task;
   }
 
-  async remove(taskId: number) {
-    try {
-      await this.findOne(taskId);
-      return this.tasksRepo.softDelete(taskId);
-    } catch (error) {
-      if (error instanceof HttpException) throw error;
-      else throw new InternalServerErrorException();
+  async getMytask(taskId: number, userId: number): Promise<Task> {
+    const task = await this.findOne(taskId);
+    if (task.assignedTo?.userId !== userId) {
+      throw new NotFoundException("Task not found!");
     }
+    return task;
   }
 
-  async assign(taskId: number, userId: number) {
-    try {
-      const task = await this.findOne(taskId);
-      const user = await this.usersRepo.findOneBy({ userId });
-      if (!user) throw new NotFoundException("User not found");
-      if (task.status !== TaskStatus.UNASSIGNED)
-        throw new BadRequestException("Task already assigned!");
-      task.assignedTo = user;
-      task.status = TaskStatus.PENDING;
-      return this.update(taskId, task);
-    } catch (error) {
-      if (error instanceof HttpException) throw error;
-      else throw new InternalServerErrorException();
-    }
+  async update(taskId: number, updateTaskDto: UpdateTaskDto): Promise<Task> {
+    const task = await this.findOne(taskId);
+    Object.assign(task, updateTaskDto);
+    return this.tasksRepo.save(task);
   }
 
-  async unassign(taskId: number) {
-    try {
-      const task = await this.findOne(taskId);
-      if (
-        task.status !== TaskStatus.UNASSIGNED &&
-        task.status !== TaskStatus.PENDING
-      )
-        throw new BadRequestException("Task already started");
-      task.assignedTo = null;
-      task.status = TaskStatus.UNASSIGNED;
-      return this.update(taskId, task);
-    } catch (error) {
-      if (error instanceof HttpException) throw error;
-      else throw new InternalServerErrorException();
-    }
+  async remove(taskId: number): Promise<void> {
+    await this.findOne(taskId);
+    await this.tasksRepo.softDelete(taskId);
   }
 
-  async validate(taskId: number) {
-    try {
-      const task = await this.findOne(taskId);
-      if (task.status !== TaskStatus.IN_REVIEW)
-        throw new BadRequestException(
-          "Task either not submitted or already reviewed",
-        );
+  async assign(taskId: number, userId: number): Promise<Task> {
+    const task = await this.findOne(taskId);
+    assertTaskTransition(task.status, TaskStatus.PENDING);
 
-      task.status = TaskStatus.COMPLETED;
-    } catch (error) {
-      if (error instanceof HttpException) throw error;
-      else throw new InternalServerErrorException();
+    const user = await this.usersRepo.findOneBy({ userId });
+    if (!user) {
+      throw new NotFoundException("User not found");
     }
+
+    task.assignedTo = user;
+    task.status = TaskStatus.PENDING;
+    return this.tasksRepo.save(task);
   }
 
-  async getMytask(taskId: number, userId: number) {
-    try {
-      const task = await this.findOne(taskId);
-      if (task.assignedTo?.userId !== userId)
-        throw new NotFoundException("Task not found!");
+  async unassign(taskId: number): Promise<Task> {
+    const task = await this.findOne(taskId);
+    assertTaskTransition(task.status, TaskStatus.UNASSIGNED);
 
-      return task;
-    } catch (error) {
-      if (error instanceof HttpException) throw error;
-      else throw new InternalServerErrorException();
-    }
+    task.assignedTo = null;
+    task.status = TaskStatus.UNASSIGNED;
+    return this.tasksRepo.save(task);
   }
 
-  async start(taskId: number, userId: number) {
-    try {
-      const task = await this.getMytask(taskId, userId);
+  async start(taskId: number, userId: number): Promise<Task> {
+    const task = await this.getMytask(taskId, userId);
+    assertTaskTransition(task.status, TaskStatus.IN_PROGRESS);
 
-      if (task.status !== TaskStatus.PENDING)
-        throw new BadRequestException(
-          "Task either submitted or already started",
-        );
-      task.startedAt = new Date();
-      task.status = TaskStatus.IN_PROGRESS;
-
-      return this.update(taskId, task);
-    } catch (error) {
-      if (error instanceof HttpException) throw error;
-      else throw new InternalServerErrorException();
-    }
+    task.startedAt = new Date();
+    task.status = TaskStatus.IN_PROGRESS;
+    return this.tasksRepo.save(task);
   }
 
-  async submit(taskId: number, userId: number) {
-    try {
-      const task = await this.getMytask(taskId, userId);
+  async submit(taskId: number, userId: number): Promise<Task> {
+    const task = await this.getMytask(taskId, userId);
+    assertTaskTransition(task.status, TaskStatus.IN_REVIEW);
 
-      if (task.status !== TaskStatus.IN_PROGRESS)
-        throw new BadRequestException("Task either submitted or not started");
-      task.startedAt = new Date();
-      task.status = TaskStatus.IN_REVIEW;
+    task.submittedAt = new Date();
+    task.status = TaskStatus.IN_REVIEW;
+    return this.tasksRepo.save(task);
+  }
 
-      return this.update(taskId, task);
-    } catch (error) {
-      if (error instanceof HttpException) throw error;
-      else throw new InternalServerErrorException();
-    }
+  async validate(taskId: number): Promise<Task> {
+    const task = await this.findOne(taskId);
+    assertTaskTransition(task.status, TaskStatus.COMPLETED);
+
+    task.status = TaskStatus.COMPLETED;
+    task.completedAt = new Date();
+    return this.tasksRepo.save(task);
+  }
+
+  async reject(taskId: number): Promise<Task> {
+    const task = await this.findOne(taskId);
+    assertTaskTransition(task.status, TaskStatus.IN_PROGRESS);
+
+    task.status = TaskStatus.IN_PROGRESS;
+    task.submittedAt = null;
+    return this.tasksRepo.save(task);
   }
 
   async getMyTaskComments(
     taskId: number,
     userId: number,
-    isAdmin: boolean = false,
-  ) {
-    try {
-      if (isAdmin) await this.findOne(taskId);
-      else await this.getMytask(taskId, userId);
-
-      const comments = await this.commentRepo.find({
-        where: {
-          task: { taskId },
-        },
-        relations: ["user"],
-        select: {
-          content: true,
-          createdAt: true,
-          updatedAt: true,
-          user: {
-            userId: true,
-            name: true,
-          },
-        },
-        order: {
-          createdAt: "ASC",
-        },
-      });
-      return comments;
-    } catch (error) {
-      if (error instanceof HttpException) throw error;
-      else throw new InternalServerErrorException();
+    isAdmin = false,
+  ): Promise<Comment[]> {
+    if (isAdmin) {
+      await this.findOne(taskId);
+    } else {
+      await this.getMytask(taskId, userId);
     }
+
+    return this.commentRepo.find({
+      where: {
+        task: { taskId },
+      },
+      relations: ["user"],
+      select: {
+        commentId: true,
+        content: true,
+        createdAt: true,
+        updatedAt: true,
+        user: {
+          userId: true,
+          name: true,
+        },
+      },
+      order: {
+        createdAt: "ASC",
+      },
+    });
   }
 
   async comment(
     taskId: number,
     userId: number,
     content: string,
-    isAdmin: boolean = false,
-  ) {
-    try {
-      if (isAdmin) await this.findOne(taskId);
-      else await this.getMytask(taskId, userId);
-
-      const comment = new Comment({
-        content,
-        task: new Task({ taskId }),
-        user: new User({ userId }),
-      });
-      await this.commentRepo.save(comment);
-    } catch (error) {
-      if (error instanceof HttpException) throw error;
-      else throw new InternalServerErrorException();
+    isAdmin = false,
+  ): Promise<Comment> {
+    if (isAdmin) {
+      await this.findOne(taskId);
+    } else {
+      await this.getMytask(taskId, userId);
     }
+
+    const comment = new Comment({
+      content,
+      task: new Task({ taskId }),
+      user: new User({ userId }),
+    });
+    return this.commentRepo.save(comment);
   }
 
-  async getComment(commentId: number, userId: number, isAdmin = true) {
-    try {
-      if (!commentId || commentId < 0)
-        throw new BadRequestException("Invalid comment ID");
+  async getComment(commentId: number, taskId?: number): Promise<Comment> {
+    if (!commentId || commentId <= 0) {
+      throw new BadRequestException("Invalid comment ID");
+    }
 
-      const comment = await this.commentRepo.findOne({
-        where: { commentId },
-        relations: ["user"],
-        select: {
-          commentId: true,
-          content: true,
-          createdAt: true,
-          updatedAt: true,
-          user: {
-            userId: true,
-            name: true,
-          },
+    const comment = await this.commentRepo.findOne({
+      where: { commentId },
+      relations: ["user", "task"],
+      select: {
+        commentId: true,
+        content: true,
+        createdAt: true,
+        updatedAt: true,
+        user: {
+          userId: true,
+          name: true,
         },
-      });
+        task: {
+          taskId: true,
+        },
+      },
+    });
 
-      if (!comment) throw new NotFoundException();
-
-      if (!isAdmin && comment.user?.userId !== userId)
-        throw new NotFoundException();
-
-      return comment;
-    } catch (error) {
-      if (error instanceof HttpException) throw error;
-      throw new InternalServerErrorException();
+    if (!comment) {
+      throw new NotFoundException("Comment not found");
     }
+
+    if (taskId !== undefined && comment.task?.taskId !== taskId) {
+      throw new NotFoundException("Comment not found for this task");
+    }
+
+    return comment;
   }
 
-  async updateComment(commentId: number, userId: number, content: string) {
-    try {
-      const comment = await this.getComment(commentId, userId);
-      comment.content = content;
-      await this.commentRepo.update(commentId, comment);
-      return this.getComment(commentId, userId);
-    } catch (error) {
-      if (error instanceof HttpException) throw error;
-      throw new InternalServerErrorException();
+  async updateComment(
+    taskId: number,
+    commentId: number,
+    userId: number,
+    content: string,
+  ): Promise<Comment> {
+    const comment = await this.getComment(commentId, taskId);
+
+    // Users and admins can edit only their own comments
+    if (comment.user?.userId !== userId) {
+      throw new ForbiddenException("Cannot edit another user's comment");
     }
+
+    comment.content = content;
+    return this.commentRepo.save(comment);
   }
 
   async removeComment(
+    taskId: number,
     commentId: number,
     userId: number,
-    isAdmin: boolean = false,
-  ) {
-    try {
-      await this.getComment(commentId, userId, isAdmin);
-      await this.commentRepo.softDelete(commentId);
-    } catch (error) {
-      if (error instanceof HttpException) throw error;
-      throw new InternalServerErrorException();
+    isAdmin = false,
+  ): Promise<void> {
+    const comment = await this.getComment(commentId, taskId);
+
+    // Users can delete only their own comments; admins can delete any comment
+    if (!isAdmin && comment.user?.userId !== userId) {
+      throw new ForbiddenException("Cannot delete another user's comment");
     }
+
+    await this.commentRepo.softDelete(commentId);
   }
 }

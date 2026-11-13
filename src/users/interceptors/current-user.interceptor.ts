@@ -23,7 +23,7 @@ export class CurrentUserInterceptor implements NestInterceptor {
 
     const userId = request?.session?.userId ?? null;
 
-    let currentUser;
+    let currentUser: User | null | undefined;
 
     if (userId) {
       try {
@@ -34,7 +34,7 @@ export class CurrentUserInterceptor implements NestInterceptor {
     }
 
     request.currentUser = currentUser
-      ? { ...currentUser, password: undefined }
+      ? new User({ ...currentUser, password: undefined })
       : undefined;
 
     return handler.handle();

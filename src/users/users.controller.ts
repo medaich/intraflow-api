@@ -34,19 +34,6 @@ export class UsersController {
     return this.usersService.invite(inviteDto.email);
   }
 
-  @UseGuards(AdminGuard)
-  @Get(":userId")
-  async findOne(@Param("userId", ParseIntPipe) userId: number) {
-    const user = await this.usersService.findOne({ userId });
-    return { ...user, password: undefined };
-  }
-
-  @UseGuards(AdminGuard)
-  @Delete(":userId")
-  async remove(@Param("userId", ParseIntPipe) userId: number) {
-    await this.usersService.remove(userId);
-  }
-
   @Get("me")
   getCurrentUser(@CurrentUser() currentUser: User) {
     return currentUser;
@@ -62,5 +49,18 @@ export class UsersController {
       userId: user.userId,
     });
     return { ...updatedUser, password: undefined };
+  }
+
+  @UseGuards(AdminGuard)
+  @Get(":userId")
+  async findOne(@Param("userId", ParseIntPipe) userId: number) {
+    const user = await this.usersService.findOne({ userId });
+    return { ...user, password: undefined };
+  }
+
+  @UseGuards(AdminGuard)
+  @Delete(":userId")
+  async remove(@Param("userId", ParseIntPipe) userId: number) {
+    await this.usersService.remove(userId);
   }
 }

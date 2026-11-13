@@ -1,15 +1,14 @@
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
 import { ValidationPipe } from "@nestjs/common";
-
-const cookieSession = require("cookie-session");
+import cookieSession from "cookie-session";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   app.use(
     cookieSession({
-      keys: [process.env.COOKIE_KEY],
+      keys: [process.env.COOKIE_KEY ?? "default_key"],
       maxAge: 24 * 60 * 60 * 1000,
       httpOnly: true,
     }),
@@ -24,4 +23,4 @@ async function bootstrap() {
   );
   await app.listen(process.env.PORT ?? 3000);
 }
-bootstrap();
+void bootstrap();

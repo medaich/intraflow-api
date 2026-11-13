@@ -4,7 +4,6 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { EntityManager, Repository } from "typeorm";
 import { User } from "./entities/user.entity";
@@ -25,19 +24,22 @@ export class UsersService {
     private readonly configService: ConfigService,
   ) {}
 
-  async create(createUserDto: CreateUserDto) {
-    const user = new User(createUserDto);
+  async create(userData: Partial<User>): Promise<User> {
+    const user = new User(userData);
     return this.entityManager.save(user);
   }
 
-  async findAll() {
+  async findAll(): Promise<User[]> {
     const users = await this.usersRepository.find();
-    if (users)
-      return users.map((user) => new User({ ...user, password: undefined }));
-    throw new NotFoundException();
+    return users.map((user) => new User({ ...user, password: undefined }));
   }
 
-  async findOne({ userId, email }: { userId?: number; email?: string }) {
+  async findByEmailWithPassword(email: string): Promise<User | null> {
+    if (!email) return null;
+    return this.usersRepository.findOneBy({ email });
+  }
+
+  async findOne({ userId, email }: { userId?: number; email?: string }): Promise<User | null> {
     if (!userId && !email) return null;
     let user: User | null = null;
 
@@ -47,8 +49,13 @@ export class UsersService {
       return new User({ ...user, password: undefined });
     }
 
-    if (email) user = await this.usersRepository.findOneBy({ email });
-    return user;
+    if (email) {
+      user = await this.usersRepository.findOneBy({ email });
+      if (user) {
+        return new User({ ...user, password: undefined });
+      }
+    }
+    return null;
   }
 
   async update(userId: number, updateUserDto: UpdateUserDto) {

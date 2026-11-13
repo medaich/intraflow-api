@@ -26,7 +26,10 @@ export class TaskResponseDto {
   startedAt: Date | null;
 
   @Expose()
-  endedAt: Date | null;
+  submittedAt: Date | null;
+
+  @Expose()
+  completedAt: Date | null;
 
   @Expose()
   status: TaskStatus;
