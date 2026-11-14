@@ -1,15 +1,18 @@
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
+  HttpStatus,
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { EntityManager, Repository } from "typeorm";
-import { User } from "./entities/user.entity";
+import { User, UserRole } from "./entities/user.entity";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Invited } from "./entities/invited.entity";
 import { ConfigService } from "@nestjs/config";
+import { SignupDto } from "../auth/dto/signup.dto";
 
 @Injectable()
 export class UsersService {
@@ -36,21 +39,31 @@ export class UsersService {
 
   async findByEmailWithPassword(email: string): Promise<User | null> {
     if (!email) return null;
-    return this.usersRepository.findOneBy({ email });
+    return this.usersRepository
+      .createQueryBuilder("user")
+      .addSelect("user.password")
+      .where("LOWER(user.email) = LOWER(:email)", { email: email.toLowerCase() })
+      .getOne();
+  }
+
+  async findByIdForAuth(userId: number): Promise<User | null> {
+    if (!userId) return null;
+    return this.usersRepository.findOne({
+      where: { userId },
+    });
   }
 
   async findOne({ userId, email }: { userId?: number; email?: string }): Promise<User | null> {
     if (!userId && !email) return null;
-    let user: User | null = null;
 
     if (userId) {
-      user = await this.usersRepository.findOneBy({ userId });
+      const user = await this.usersRepository.findOneBy({ userId });
       if (!user) throw new NotFoundException("No user found!");
       return new User({ ...user, password: undefined });
     }
 
     if (email) {
-      user = await this.usersRepository.findOneBy({ email });
+      const user = await this.usersRepository.findOneBy({ email: email.toLowerCase() });
       if (user) {
         return new User({ ...user, password: undefined });
       }
@@ -62,14 +75,33 @@ export class UsersService {
     return this.usersRepository.update(userId, updateUserDto);
   }
 
-  async remove(userId: number) {
-    return this.usersRepository.softDelete(userId);
+  async remove(userId: number, currentAdminId?: number): Promise<void> {
+    if (currentAdminId && userId === currentAdminId) {
+      throw new BadRequestException("Admins cannot delete their own account");
+    }
+
+    const user = await this.usersRepository.findOne({ where: { userId } });
+    if (!user) {
+      throw new NotFoundException("User not found");
+    }
+
+    if (user.role === UserRole.ADMIN) {
+      const adminCount = await this.usersRepository.count({
+        where: { role: UserRole.ADMIN },
+      });
+      if (adminCount <= 1) {
+        throw new BadRequestException("Cannot delete the last remaining administrator");
+      }
+    }
+
+    await this.usersRepository.softDelete(userId);
   }
 
-  async invite(email: string) {
+  async invite(email: string, role: UserRole = UserRole.EMPLOYEE): Promise<Invited> {
+    const normalizedEmail = email.toLowerCase();
     const pastInvites = await this.invitedRepo.find({
       where: {
-        email,
+        email: normalizedEmail,
       },
       order: {
         expiresAt: "DESC",
@@ -77,39 +109,72 @@ export class UsersService {
     });
 
     const hasValidInvite = pastInvites[0]?.expiresAt > new Date();
-    if (hasValidInvite)
+    if (hasValidInvite) {
       throw new ConflictException(
         "A valid invite already exists for this email",
       );
+    }
 
-    const userWithEmail = await this.findOne({ email });
-    if (userWithEmail)
+    const userWithEmail = await this.findOne({ email: normalizedEmail });
+    if (userWithEmail) {
       throw new ConflictException("This email is already registered");
+    }
 
-    const expiration = Number(this.configService.get("TOKEN_EXPIRATION")) || 0;
-    const expiresAt = new Date(Date.now() + expiration * 60 * 1000);
+    const expiration = Number(this.configService.get("TOKEN_EXPIRATION")) || 86400;
+    const expiresAt = new Date(Date.now() + expiration * 1000);
 
     const invited = this.invitedRepo.create({
-      email,
+      email: normalizedEmail,
+      role,
       expiresAt,
     });
 
     return this.invitedRepo.save(invited);
   }
 
-  async checkInvite(token: string, email: string) {
-    const invited = await this.invitedRepo.findOneBy({ token });
+  async registerWithInvite(
+    token: string,
+    signupDto: SignupDto,
+    hashedPassword: string,
+  ): Promise<User> {
+    return this.entityManager.transaction(async (manager) => {
+      const invited = await manager.findOne(Invited, {
+        where: { token },
+        lock: { mode: "pessimistic_write" },
+      });
+      if (!invited) {
+        throw new NotFoundException("Invite not found");
+      }
 
-    if (!invited) throw new NotFoundException();
+      if (new Date() >= invited.expiresAt) {
+        throw new HttpException("Invite has expired", HttpStatus.GONE);
+      }
 
-    if (email !== invited.email) throw new BadRequestException("Invalid email");
+      if (invited.email.toLowerCase() !== signupDto.email.toLowerCase()) {
+        throw new BadRequestException("Email does not match invite");
+      }
 
-    const now = new Date();
+      const existingUser = await manager.findOne(User, {
+        where: { email: signupDto.email.toLowerCase() },
+      });
+      if (existingUser) {
+        throw new ConflictException("User with this email already exists");
+      }
 
-    if (now >= invited.expiresAt) throw new NotFoundException("Expired");
+      const deleteRes = await manager.delete(Invited, { token });
+      if (deleteRes.affected !== 1) {
+        throw new ConflictException("Invitation token already used or invalid");
+      }
 
-    await this.invitedRepo.delete(token);
+      const user = manager.create(User, {
+        ...signupDto,
+        email: signupDto.email.toLowerCase(),
+        password: hashedPassword,
+        role: invited.role ?? UserRole.EMPLOYEE,
+      });
 
-    return true;
+      const savedUser = await manager.save(User, user);
+      return savedUser;
+    });
   }
 }

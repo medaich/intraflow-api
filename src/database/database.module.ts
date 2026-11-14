@@ -1,21 +1,31 @@
-import { Module } from "@nestjs/common";
+import { Module, forwardRef } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { TypeOrmModule } from "@nestjs/typeorm";
+import { TypeOrmModule, TypeOrmModuleOptions } from "@nestjs/typeorm";
+import { User } from "../users/entities/user.entity";
+import { AdminSeedService } from "./admin-seed.service";
+import { AuthModule } from "../auth/auth.module";
+
+export const databaseConfigFactory = (configService: ConfigService): TypeOrmModuleOptions => ({
+  type: "mysql",
+  host: configService.getOrThrow<string>("MYSQL_HOST"),
+  port: Number(configService.getOrThrow("MYSQL_PORT")),
+  database: configService.getOrThrow<string>("MYSQL_DATABASE"),
+  username: configService.getOrThrow<string>("MYSQL_USERNAME"),
+  password: configService.getOrThrow<string>("MYSQL_ROOT_PASSWORD"),
+  autoLoadEntities: true,
+  synchronize: false,
+});
 
 @Module({
   imports: [
     TypeOrmModule.forRootAsync({
-      useFactory: (configService: ConfigService) => ({
-        type: "mysql",
-        host: configService.getOrThrow("MYSQL_HOST"),
-        port: configService.getOrThrow("MYSQL_PORT"),
-        database: configService.getOrThrow("MYSQL_DATABASE"),
-        username: configService.getOrThrow("MYSQL_USERNAME"),
-        password: configService.getOrThrow("MYSQL_ROOT_PASSWORD"),
-        autoLoadEntities: true,
-      }),
+      useFactory: databaseConfigFactory,
       inject: [ConfigService],
     }),
+    TypeOrmModule.forFeature([User]),
+    forwardRef(() => AuthModule),
   ],
+  providers: [AdminSeedService],
+  exports: [AdminSeedService],
 })
 export class DatabaseModule {}

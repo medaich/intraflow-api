@@ -176,7 +176,8 @@ export class TasksService {
       task: new Task({ taskId }),
       user: new User({ userId }),
     });
-    return this.commentRepo.save(comment);
+    const saved = await this.commentRepo.save(comment);
+    return this.getComment(saved.commentId, taskId);
   }
 
   async getComment(commentId: number, taskId?: number): Promise<Comment> {
@@ -187,19 +188,6 @@ export class TasksService {
     const comment = await this.commentRepo.findOne({
       where: { commentId },
       relations: ["user", "task"],
-      select: {
-        commentId: true,
-        content: true,
-        createdAt: true,
-        updatedAt: true,
-        user: {
-          userId: true,
-          name: true,
-        },
-        task: {
-          taskId: true,
-        },
-      },
     });
 
     if (!comment) {

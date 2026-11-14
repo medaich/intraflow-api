@@ -20,12 +20,12 @@ export class Comment {
   @PrimaryGeneratedColumn({ name: "comment_id" })
   commentId: number;
 
-  @ManyToOne(() => User, (User) => User.comments)
-  @JoinColumn()
+  @ManyToOne(() => User, (User) => User.comments, { onDelete: "SET NULL" })
+  @JoinColumn({ name: "userId" })
   user: User | null;
 
-  @ManyToOne(() => Task, (Task) => Task.comments)
-  @JoinColumn()
+  @ManyToOne(() => Task, (Task) => Task.comments, { onDelete: "CASCADE" })
+  @JoinColumn({ name: "taskId" })
   task: Task | null;
 
   @Column("text")

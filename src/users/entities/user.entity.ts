@@ -42,7 +42,7 @@ export class User {
   @Column({ name: "image_path", nullable: true })
   imagePath: string;
 
-  @Column()
+  @Column({ select: false })
   password: string;
 
   @Column({

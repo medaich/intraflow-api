@@ -5,15 +5,23 @@ import {
   Index,
   PrimaryGeneratedColumn,
 } from "typeorm";
+import { UserRole } from "./user.entity";
 
-@Entity()
+@Entity("invited")
 export class Invited {
   @PrimaryGeneratedColumn("uuid")
   token: string;
 
-  @Index()
+  @Index("IDX_INVITED_EMAIL")
   @Column()
   email: string;
+
+  @Column({
+    type: "enum",
+    enum: UserRole,
+    default: UserRole.EMPLOYEE,
+  })
+  role: UserRole;
 
   @CreateDateColumn({ type: "timestamp", name: "created_at" })
   createdAt: Date;

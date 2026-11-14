@@ -5,10 +5,10 @@ import { TypeOrmModule } from "@nestjs/typeorm";
 import { User } from "./entities/user.entity";
 import { Task } from "../tasks/entities/task.entity";
 import { Comment } from "../tasks/entities/comment.entity";
-import { CurrentUserInterceptor } from "./interceptors/current-user.interceptor";
-import { APP_INTERCEPTOR } from "@nestjs/core";
 import { ConfigModule } from "@nestjs/config";
 import { Invited } from "./entities/invited.entity";
+import { AuthGuard } from "src/guards/auth.guard";
+import { AdminGuard } from "src/guards/admin-auth.guard";
 
 @Module({
   imports: [
@@ -18,11 +18,9 @@ import { Invited } from "./entities/invited.entity";
   controllers: [UsersController],
   providers: [
     UsersService,
-    {
-      useClass: CurrentUserInterceptor,
-      provide: APP_INTERCEPTOR,
-    },
+    AuthGuard,
+    AdminGuard,
   ],
-  exports: [UsersService],
+  exports: [UsersService, AuthGuard, AdminGuard],
 })
 export class UsersModule {}

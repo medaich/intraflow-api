@@ -31,7 +31,7 @@ export class Task {
   @PrimaryGeneratedColumn({ name: "task_id" })
   taskId: number;
 
-  @ManyToOne(() => User, (User) => User.tasks, { eager: true })
+  @ManyToOne(() => User, (User) => User.tasks, { eager: true, onDelete: "SET NULL" })
   @JoinColumn({ name: "assigned_to" })
   assignedTo: User | null;
 
@@ -56,12 +56,14 @@ export class Task {
   @Column({
     type: "timestamp",
     name: "submitted_at",
+    nullable: true,
   })
   submittedAt: Date | null;
 
   @Column({
     type: "timestamp",
     name: "completed_at",
+    nullable: true,
   })
   completedAt: Date | null;
 

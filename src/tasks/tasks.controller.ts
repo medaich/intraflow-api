@@ -10,6 +10,7 @@ import {
   Put,
   UseGuards,
 } from "@nestjs/common";
+import { ApiTags, ApiCookieAuth } from "@nestjs/swagger";
 import { plainToInstance } from "class-transformer";
 import { AdminGuard } from "src/guards/admin-auth.guard";
 import { AuthGuard } from "src/guards/auth.guard";
@@ -21,14 +22,25 @@ import { TaskResponseDto } from "./dto/task-response.dto";
 import { AssignTaskDto } from "./dto/assign-task.dto";
 import { TasksService } from "./tasks.service";
 import { CreateCommentDto } from "./dto/create-comment.dto";
+import { CommentResponseDto } from "./dto/comment-response.dto";
 import { Task } from "./entities/task.entity";
+import { Comment } from "./entities/comment.entity";
 
+@ApiTags("tasks")
+@ApiCookieAuth("session")
+@UseGuards(AuthGuard)
 @Controller("tasks")
 export class TasksController {
   constructor(private readonly tasksService: TasksService) {}
 
   private toResponseDto(task: Task): TaskResponseDto {
     return plainToInstance(TaskResponseDto, task, {
+      excludeExtraneousValues: true,
+    });
+  }
+
+  private toCommentResponseDto(comment: Comment): CommentResponseDto {
+    return plainToInstance(CommentResponseDto, comment, {
       excludeExtraneousValues: true,
     });
   }
@@ -89,8 +101,9 @@ export class TasksController {
   async getMyTaskComments(
     @CurrentUser() user: User,
     @Param("taskId", ParseIntPipe) taskId: number,
-  ) {
-    return this.tasksService.getMyTaskComments(taskId, user.userId);
+  ): Promise<CommentResponseDto[]> {
+    const comments = await this.tasksService.getMyTaskComments(taskId, user.userId);
+    return comments.map((comment) => this.toCommentResponseDto(comment));
   }
 
   @UseGuards(AuthGuard)
@@ -100,13 +113,14 @@ export class TasksController {
     @Param("taskId", ParseIntPipe) taskId: number,
     @Param("commentId", ParseIntPipe) commentId: number,
     @Body() comment: CreateCommentDto,
-  ) {
-    return this.tasksService.updateComment(
+  ): Promise<CommentResponseDto> {
+    const updated = await this.tasksService.updateComment(
       taskId,
       commentId,
       user.userId,
       comment.content,
     );
+    return this.toCommentResponseDto(updated);
   }
 
   @UseGuards(AuthGuard)
@@ -115,8 +129,8 @@ export class TasksController {
     @CurrentUser() user: User,
     @Param("taskId", ParseIntPipe) taskId: number,
     @Param("commentId", ParseIntPipe) commentId: number,
-  ) {
-    return this.tasksService.removeComment(
+  ): Promise<void> {
+    await this.tasksService.removeComment(
       taskId,
       commentId,
       user.userId,
@@ -130,8 +144,9 @@ export class TasksController {
     @CurrentUser() user: User,
     @Param("taskId", ParseIntPipe) taskId: number,
     @Body() comment: CreateCommentDto,
-  ) {
-    return this.tasksService.comment(taskId, user.userId, comment.content);
+  ): Promise<CommentResponseDto> {
+    const created = await this.tasksService.comment(taskId, user.userId, comment.content);
+    return this.toCommentResponseDto(created);
   }
 
   @UseGuards(AdminGuard)
@@ -186,8 +201,9 @@ export class TasksController {
   async getComments(
     @CurrentUser() user: User,
     @Param("taskId", ParseIntPipe) taskId: number,
-  ) {
-    return this.tasksService.getMyTaskComments(taskId, user.userId, true);
+  ): Promise<CommentResponseDto[]> {
+    const comments = await this.tasksService.getMyTaskComments(taskId, user.userId, true);
+    return comments.map((comment) => this.toCommentResponseDto(comment));
   }
 
   @UseGuards(AdminGuard)
@@ -196,13 +212,14 @@ export class TasksController {
     @CurrentUser() user: User,
     @Param("taskId", ParseIntPipe) taskId: number,
     @Body() comment: CreateCommentDto,
-  ) {
-    return this.tasksService.comment(
+  ): Promise<CommentResponseDto> {
+    const created = await this.tasksService.comment(
       taskId,
       user.userId,
       comment.content,
       true,
     );
+    return this.toCommentResponseDto(created);
   }
 
   @UseGuards(AdminGuard)
@@ -211,7 +228,7 @@ export class TasksController {
     @CurrentUser() user: User,
     @Param("taskId", ParseIntPipe) taskId: number,
     @Param("commentId", ParseIntPipe) commentId: number,
-  ) {
-    return this.tasksService.removeComment(taskId, commentId, user.userId, true);
+  ): Promise<void> {
+    await this.tasksService.removeComment(taskId, commentId, user.userId, true);
   }
 }

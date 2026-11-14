@@ -57,3 +57,61 @@ This document records all breaking changes, payload modifications, response shap
   * Users can edit or delete only their own comments (`403 Forbidden` if attempting to edit or delete someone else's comment).
   * Admins can delete any comment, but edit only their own comments.
   * Comments are validated against the `:taskId` path parameter (`404 Not Found` if a comment does not belong to the specified task).
+
+---
+
+## Phase 2: Security, Auth Hardening, Config & Infrastructure
+
+### 1. New Endpoints & Documentation
+* **`GET /docs` (Swagger / OpenAPI UI)**
+  * Interactive API documentation generated from DTOs and decorators.
+  * Cookie authentication registered (`session` cookie apiKey).
+* **`GET /health` (Terminus Health Check)**
+  * Returns system status and database ping check.
+  * Response format:
+    ```json
+    {
+      "status": "ok",
+      "info": {
+        "database": { "status": "up" }
+      },
+      "error": {},
+      "details": {
+        "database": { "status": "up" }
+      }
+    }
+    ```
+
+### 2. Authentication & Signin Updates
+* **`POST /auth/signin`**
+  * **Timing-Equalized Uniform 401:** Returns `401 Unauthorized` with message `"Invalid credentials"` regardless of whether the email was not found or the password was incorrect. Scrypt hashing runs with identical cost parameters against a dummy hash for missing users to prevent user enumeration via timing attacks.
+  * **Rate Limiting:** Guarded with strict rate limiting (5 attempts per minute per IP) returning `429 Too Many Requests` when exceeded.
+
+### 3. Invitation & Signup Lifecycle
+* **`POST /users/invite`**
+  * Admins can optionally specify a target `role` (`EMPLOYEE` or `ADMIN`, defaulting to `EMPLOYEE`).
+* **`POST /auth/signup?token=:token`**
+  * **Expired Token Status:** Returns **`410 Gone`** with message `"Invitation token has expired"` when attempting to register with an expired token (previously returned `404 Not Found`).
+  * **Single-Transaction Guarantee:** Token validation, consumption (deletion), and user record creation occur within a single database transaction.
+  * **Invited Role Inheritance:** The user account is assigned the role specified on the invite record.
+
+### 4. Session & Cookie Security
+* **`POST /auth/signout`**
+  * Destroys session cookie (`request.session = null`).
+* **Session Cookie Hardening:**
+  * Configured with `httpOnly: true`, `sameSite: 'lax'`, `secure: true` (in production), and `trust proxy` enabled on Express adapter.
+  * Cookies store only `userId`. Real-time DB hydration on every request validates account state; demoted or soft-deleted users lose authorization immediately with `401 Unauthorized`.
+
+### 5. Admin Self-Protection
+* **`DELETE /users/:userId`**
+  * Returns **`400 Bad Request`** if an administrator attempts to delete their own account (`"Administrators cannot delete their own account"`).
+  * Returns **`400 Bad Request`** if attempting to delete the last remaining administrator in the system (`"Cannot delete the last remaining administrator"`).
+
+### 6. Configuration & Environment Variables
+* **`TOKEN_EXPIRATION` Unit Change:**
+  * Changed unit from **minutes** to **seconds**.
+  * Default value is now `86400` seconds (24 hours), previously `1440` minutes.
+  * Used for calculating invitation token expiration: `new Date(Date.now() + expiration * 1000)`.
+* **Database & Seed Behavior:**
+  * `DatabaseModule` hardcodes `synchronize: false` and relies on TypeORM migrations (`pnpm migration:run`).
+  * `ADMIN_EMAIL` and `ADMIN_PASSWORD` are strictly required in production (`NODE_ENV=production`), but optional in development/test environments (skipping seed with a warning if omitted).
