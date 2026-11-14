@@ -6,6 +6,8 @@ import { LoggerModule } from "nestjs-pino";
 import { UsersModule } from "./users/users.module";
 import { DatabaseModule } from "./database/database.module";
 import { TasksModule } from "./tasks/tasks.module";
+import { TeamsModule } from "./teams/teams.module";
+import { ProjectsModule } from "./projects/projects.module";
 import { AuthModule } from "./auth/auth.module";
 import { HealthModule } from "./health/health.module";
 import { envValidationSchema } from "./config/env.validation";
@@ -40,6 +42,8 @@ import { envValidationSchema } from "./config/env.validation";
     ]),
     DatabaseModule,
     UsersModule,
+    TeamsModule,
+    ProjectsModule,
     TasksModule,
     AuthModule,
     HealthModule,

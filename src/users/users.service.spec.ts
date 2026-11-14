@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { BadRequestException } from '@nestjs/common';
-import { EntityManager, Repository } from 'typeorm';
+import { EntityManager, FindManyOptions, FindOneOptions, Repository } from 'typeorm';
 import { UsersService } from './users.service';
 import { User, UserRole } from './entities/user.entity';
 import { Invited } from './entities/invited.entity';
@@ -21,12 +21,33 @@ describe('UsersService (Unit Tests)', () => {
       createQueryBuilder: jest.fn(),
     };
 
+    const mockManager = {
+      findOne: jest.fn((_cls: unknown, options: FindOneOptions<User>) => usersRepo.findOne!(options)),
+      count: jest.fn((_cls: unknown, options?: FindManyOptions<User>) => usersRepo.count!(options)),
+      softDelete: jest.fn((_cls: unknown, id: number) => usersRepo.softDelete!(id)),
+      delete: jest.fn(),
+      createQueryBuilder: jest.fn(() => ({
+        innerJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+      })),
+      save: jest.fn(),
+      create: jest.fn((entityClass, dto) => dto),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         UsersService,
         { provide: getRepositoryToken(User), useValue: usersRepo },
         { provide: getRepositoryToken(Invited), useValue: {} },
-        { provide: EntityManager, useValue: {} },
+        {
+          provide: EntityManager,
+          useValue: {
+            transaction: jest.fn((cb) => cb(mockManager)),
+            findOne: jest.fn(),
+          },
+        },
         { provide: ConfigService, useValue: { get: jest.fn() } },
       ],
     }).compile();
@@ -41,7 +62,7 @@ describe('UsersService (Unit Tests)', () => {
   });
 
   it('findOne does not leak password hash', async () => {
-    usersRepo.findOneBy!.mockResolvedValue(
+    usersRepo.findOne!.mockResolvedValue(
       new User({ userId: 1, email: 'test@example.com', password: 'secret_hash' }),
     );
     const user = await usersService.findOne({ userId: 1 });

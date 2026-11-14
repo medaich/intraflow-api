@@ -18,6 +18,9 @@ export class CommentResponseDto {
   content: string;
 
   @Expose()
+  isSystem: boolean;
+
+  @Expose()
   createdAt: Date;
 
   @Expose()

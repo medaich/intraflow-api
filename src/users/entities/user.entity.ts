@@ -6,9 +6,11 @@ import {
   UpdateDateColumn,
   DeleteDateColumn,
   OneToMany,
+  OneToOne,
 } from "typeorm";
 import { Task } from "../../tasks/entities/task.entity";
 import { Comment } from "../../tasks/entities/comment.entity";
+import { TeamMembership } from "../../teams/entities/team-membership.entity";
 
 export enum UserRole {
   EMPLOYEE = "EMPLOYEE",
@@ -17,8 +19,10 @@ export enum UserRole {
 
 @Entity("users")
 export class User {
-  constructor(user: Partial<User>) {
-    Object.assign(this, user);
+  constructor(user?: Partial<User>) {
+    if (user) {
+      Object.assign(this, user);
+    }
   }
 
   @PrimaryGeneratedColumn({ name: "user_id" })
@@ -29,6 +33,9 @@ export class User {
 
   @OneToMany(() => Comment, (Comment) => Comment.user)
   comments: Comment[];
+
+  @OneToOne(() => TeamMembership, (membership) => membership.user)
+  membership?: TeamMembership | null;
 
   @Column()
   name: string;
@@ -52,12 +59,12 @@ export class User {
   })
   role: UserRole;
 
-  @CreateDateColumn({ name: "created_at", type: "timestamp" })
+  @CreateDateColumn({ name: "created_at", type: "timestamp", precision: 6 })
   createdAt: Date;
 
-  @UpdateDateColumn({ name: "updated_at", type: "timestamp" })
+  @UpdateDateColumn({ name: "updated_at", type: "timestamp", precision: 6 })
   updatedAt: Date;
 
-  @DeleteDateColumn({ name: "deleted_at", type: "timestamp", nullable: true })
+  @DeleteDateColumn({ name: "deleted_at", type: "timestamp", precision: 6, nullable: true })
   deletedAt: Date;
 }

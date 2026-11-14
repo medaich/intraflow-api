@@ -7,25 +7,24 @@ import cookieSession from 'cookie-session';
 import { Express } from 'express';
 import { AppModule } from '../src/app.module';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { User, UserRole } from '../src/users/entities/user.entity';
 import { Invited } from '../src/users/entities/invited.entity';
 import { Task, TaskStatus } from '../src/tasks/entities/task.entity';
-import { Comment } from '../src/tasks/entities/comment.entity';
 import { UsersService } from '../src/users/users.service';
 
 describe('Real Database End-to-End Tests (MySQL intraflow_test)', () => {
+  let moduleFixture: TestingModule;
   let app: INestApplication<App>;
   let userRepo: Repository<User>;
   let invitedRepo: Repository<Invited>;
   let taskRepo: Repository<Task>;
-  let commentRepo: Repository<Comment>;
   let usersService: UsersService;
   let adminCookies: string[];
 
   beforeAll(async () => {
     process.env.NODE_ENV = 'test';
-    const moduleFixture: TestingModule = await Test.createTestingModule({
+    moduleFixture = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
 
@@ -58,13 +57,17 @@ describe('Real Database End-to-End Tests (MySQL intraflow_test)', () => {
     userRepo = moduleFixture.get<Repository<User>>(getRepositoryToken(User));
     invitedRepo = moduleFixture.get<Repository<Invited>>(getRepositoryToken(Invited));
     taskRepo = moduleFixture.get<Repository<Task>>(getRepositoryToken(Task));
-    commentRepo = moduleFixture.get<Repository<Comment>>(getRepositoryToken(Comment));
     usersService = moduleFixture.get<UsersService>(UsersService);
 
     // Clean up test data from prior runs
-    await commentRepo.createQueryBuilder().delete().execute();
-    await taskRepo.createQueryBuilder().delete().execute();
-    await invitedRepo.createQueryBuilder().delete().execute();
+    const dataSource = moduleFixture.get<DataSource>(DataSource);
+    await dataSource.query('DELETE FROM task_dependencies');
+    await dataSource.query('DELETE FROM comment');
+    await dataSource.query('DELETE FROM tasks');
+    await dataSource.query('DELETE FROM projects');
+    await dataSource.query('DELETE FROM team_memberships');
+    await dataSource.query('DELETE FROM teams');
+    await dataSource.query('DELETE FROM invited');
     await userRepo
       .createQueryBuilder()
       .delete()
@@ -74,6 +77,14 @@ describe('Real Database End-to-End Tests (MySQL intraflow_test)', () => {
 
   afterAll(async () => {
     if (app) {
+      try {
+        const ds = moduleFixture.get<DataSource>(DataSource);
+        if (ds?.isInitialized) {
+          await ds.destroy();
+        }
+      } catch {
+        // DataSource already closed
+      }
       await app.close();
     }
   });

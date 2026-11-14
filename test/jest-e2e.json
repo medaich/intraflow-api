@@ -5,6 +5,7 @@
   "testRegex": ".e2e-spec.ts$",
   "globalSetup": "<rootDir>/global-setup.ts",
   "maxWorkers": 1,
+  "forceExit": true,
   "testTimeout": 60000,
   "transform": {
     "^.+\\.(t|j)s$": [

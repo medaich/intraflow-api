@@ -2,13 +2,25 @@ import { Exclude, Expose, Type } from "class-transformer";
 import { TaskStatus } from "../entities/task.entity";
 
 @Exclude()
+export class TaskAssigneeDto {
+  @Expose()
+  userId: number;
+
+  @Expose()
+  name: string;
+}
+
+@Exclude()
 export class TaskResponseDto {
   @Expose()
   taskId: number;
 
   @Expose()
-  @Type(() => OnlyUserIdDto)
-  assignedTo: OnlyUserIdDto | null;
+  projectId: number | null;
+
+  @Expose()
+  @Type(() => TaskAssigneeDto)
+  assignedTo: TaskAssigneeDto | null;
 
   @Expose()
   name: string;
@@ -35,6 +47,15 @@ export class TaskResponseDto {
   status: TaskStatus;
 
   @Expose()
+  dependsOn: number[];
+
+  @Expose()
+  blockedBy: number[];
+
+  @Expose()
+  isBlocked: boolean;
+
+  @Expose()
   createdAt: Date;
 
   @Expose()
@@ -42,9 +63,4 @@ export class TaskResponseDto {
 
   @Exclude()
   deletedAt: Date | null;
-}
-
-export class OnlyUserIdDto {
-  @Expose()
-  userId: number;
 }

@@ -31,6 +31,9 @@ export class Comment {
   @Column("text")
   content: string;
 
+  @Column({ name: "is_system", type: "boolean", default: false })
+  isSystem: boolean;
+
   @CreateDateColumn({ name: "created_at", type: "timestamp" })
   createdAt: Date;
 

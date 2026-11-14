@@ -4,15 +4,17 @@ import { ConfigService } from '@nestjs/config';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import helmet from 'helmet';
+import { DataSource } from 'typeorm';
 import { AppModule } from './../src/app.module';
 
 describe('Application End-to-End Tests (Real Database, CORS & Helmet)', () => {
+  let moduleFixture: TestingModule;
   let app: INestApplication<App>;
   let configService: ConfigService;
 
   beforeAll(async () => {
     process.env.NODE_ENV = 'test';
-    const moduleFixture: TestingModule = await Test.createTestingModule({
+    moduleFixture = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
 
@@ -32,6 +34,14 @@ describe('Application End-to-End Tests (Real Database, CORS & Helmet)', () => {
 
   afterAll(async () => {
     if (app) {
+      try {
+        const ds = moduleFixture.get<DataSource>(DataSource);
+        if (ds?.isInitialized) {
+          await ds.destroy();
+        }
+      } catch {
+        // DataSource already closed
+      }
       await app.close();
     }
   });

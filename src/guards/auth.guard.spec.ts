@@ -105,6 +105,41 @@ describe('AuthGuard and AdminGuard (Session Handling & Single Hydration)', () =>
   });
 
   describe('Single Request Hydration Guarantee', () => {
+    it('AuthGuard populates request.currentUser with membership and AdminGuard reuses it (exactly 1 DB lookup)', async () => {
+      const dbUser = new User({
+        userId: 10,
+        email: 'employee@intraflow.dev',
+        role: UserRole.EMPLOYEE,
+        membership: {
+          id: 5,
+          userId: 10,
+          teamId: 1,
+          role: 'MODERATOR' as any,
+          createdAt: new Date(),
+        } as any,
+      });
+      mockUsersService.findByIdForAuth!.mockResolvedValue(dbUser);
+
+      const requestObj: Record<string, unknown> = {
+        session: { userId: 10 },
+      };
+      const context = {
+        switchToHttp: () => ({
+          getRequest: () => requestObj,
+        }),
+      } as unknown as ExecutionContext;
+
+      const authGuard = new AuthGuard(mockUsersService as UsersService);
+
+      // 1. AuthGuard activates
+      const authResult = await authGuard.canActivate(context);
+      expect(authResult).toBe(true);
+      expect(requestObj.currentUser).toBe(dbUser);
+      expect((requestObj.currentUser as User).membership?.teamId).toBe(1);
+      expect((requestObj.currentUser as User).membership?.role).toBe('MODERATOR');
+      expect(mockUsersService.findByIdForAuth).toHaveBeenCalledTimes(1);
+    });
+
     it('AuthGuard populates request.currentUser and AdminGuard reuses it (exactly 1 DB lookup)', async () => {
       const dbUser = new User({
         userId: 10,

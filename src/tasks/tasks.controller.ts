@@ -3,6 +3,8 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseIntPipe,
   Patch,
@@ -10,16 +12,17 @@ import {
   Put,
   UseGuards,
 } from "@nestjs/common";
-import { ApiTags, ApiCookieAuth } from "@nestjs/swagger";
+import { ApiTags, ApiCookieAuth, ApiOperation, ApiResponse } from "@nestjs/swagger";
 import { plainToInstance } from "class-transformer";
-import { AdminGuard } from "src/guards/admin-auth.guard";
-import { AuthGuard } from "src/guards/auth.guard";
-import { CurrentUser } from "src/users/decorators/current-user.decorator";
-import { User } from "src/users/entities/user.entity";
+import { AdminGuard } from "../guards/admin-auth.guard";
+import { AuthGuard } from "../guards/auth.guard";
+import { CurrentUser } from "../users/decorators/current-user.decorator";
+import { User, UserRole } from "../users/entities/user.entity";
 import { CreateTaskDto } from "./dto/create-task.dto";
 import { UpdateTaskDto } from "./dto/update-task.dto";
 import { TaskResponseDto } from "./dto/task-response.dto";
 import { AssignTaskDto } from "./dto/assign-task.dto";
+import { SetDependenciesDto } from "./dto/set-dependencies.dto";
 import { TasksService } from "./tasks.service";
 import { CreateCommentDto } from "./dto/create-comment.dto";
 import { CommentResponseDto } from "./dto/comment-response.dto";
@@ -45,6 +48,7 @@ export class TasksController {
     });
   }
 
+  // Standalone task creation is admin-only
   @UseGuards(AdminGuard)
   @Post()
   async create(@Body() createTaskDto: CreateTaskDto): Promise<TaskResponseDto> {
@@ -59,14 +63,12 @@ export class TasksController {
     return tasks.map((task) => this.toResponseDto(task));
   }
 
-  @UseGuards(AuthGuard)
   @Get("my-tasks")
   async getMyTasks(@CurrentUser() user: User): Promise<TaskResponseDto[]> {
     const tasks = await this.tasksService.findAll(user.userId);
     return tasks.map((task) => this.toResponseDto(task));
   }
 
-  @UseGuards(AuthGuard)
   @Get("my-tasks/:taskId")
   async getMyTaskDetails(
     @CurrentUser() user: User,
@@ -76,9 +78,8 @@ export class TasksController {
     return this.toResponseDto(task);
   }
 
-  @UseGuards(AuthGuard)
   @Post("my-tasks/:taskId/start")
-  async start(
+  async startMyTask(
     @CurrentUser() user: User,
     @Param("taskId", ParseIntPipe) taskId: number,
   ): Promise<TaskResponseDto> {
@@ -86,9 +87,17 @@ export class TasksController {
     return this.toResponseDto(task);
   }
 
-  @UseGuards(AuthGuard)
+  @Patch(":taskId/start")
+  async startTask(
+    @CurrentUser() user: User,
+    @Param("taskId", ParseIntPipe) taskId: number,
+  ): Promise<TaskResponseDto> {
+    const task = await this.tasksService.start(taskId, user.userId);
+    return this.toResponseDto(task);
+  }
+
   @Post("my-tasks/:taskId/submit")
-  async submit(
+  async submitMyTask(
     @CurrentUser() user: User,
     @Param("taskId", ParseIntPipe) taskId: number,
   ): Promise<TaskResponseDto> {
@@ -96,7 +105,15 @@ export class TasksController {
     return this.toResponseDto(task);
   }
 
-  @UseGuards(AuthGuard)
+  @Patch(":taskId/submit")
+  async submitTask(
+    @CurrentUser() user: User,
+    @Param("taskId", ParseIntPipe) taskId: number,
+  ): Promise<TaskResponseDto> {
+    const task = await this.tasksService.submit(taskId, user.userId);
+    return this.toResponseDto(task);
+  }
+
   @Get("my-tasks/:taskId/comments")
   async getMyTaskComments(
     @CurrentUser() user: User,
@@ -106,9 +123,8 @@ export class TasksController {
     return comments.map((comment) => this.toCommentResponseDto(comment));
   }
 
-  @UseGuards(AuthGuard)
   @Put("my-tasks/:taskId/comments/:commentId")
-  async updateComment(
+  async updateMyComment(
     @CurrentUser() user: User,
     @Param("taskId", ParseIntPipe) taskId: number,
     @Param("commentId", ParseIntPipe) commentId: number,
@@ -123,92 +139,143 @@ export class TasksController {
     return this.toCommentResponseDto(updated);
   }
 
-  @UseGuards(AuthGuard)
   @Delete("my-tasks/:taskId/comments/:commentId")
-  async removeComment(
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async removeMyComment(
     @CurrentUser() user: User,
     @Param("taskId", ParseIntPipe) taskId: number,
     @Param("commentId", ParseIntPipe) commentId: number,
   ): Promise<void> {
-    await this.tasksService.removeComment(
-      taskId,
-      commentId,
-      user.userId,
-      false,
-    );
+    await this.tasksService.removeComment(taskId, commentId, user.userId, user);
   }
 
-  @UseGuards(AuthGuard)
   @Post("my-tasks/:taskId/comments")
-  async comment(
+  async commentOnMyTask(
     @CurrentUser() user: User,
     @Param("taskId", ParseIntPipe) taskId: number,
     @Body() comment: CreateCommentDto,
   ): Promise<CommentResponseDto> {
-    const created = await this.tasksService.comment(taskId, user.userId, comment.content);
+    const created = await this.tasksService.comment(taskId, user.userId, comment.content, user);
     return this.toCommentResponseDto(created);
   }
 
-  @UseGuards(AdminGuard)
+  // Generalized Task Routes with Policy-Based Authorization
   @Get(":taskId")
-  async findOne(@Param("taskId", ParseIntPipe) taskId: number): Promise<TaskResponseDto> {
-    const task = await this.tasksService.findOne(taskId);
+  async findOne(
+    @Param("taskId", ParseIntPipe) taskId: number,
+    @CurrentUser() user: User,
+  ): Promise<TaskResponseDto> {
+    const task = await this.tasksService.findOne(taskId, user);
     return this.toResponseDto(task);
   }
 
-  @UseGuards(AdminGuard)
   @Patch(":taskId")
   async update(
     @Param("taskId", ParseIntPipe) taskId: number,
     @Body() updateTaskDto: UpdateTaskDto,
+    @CurrentUser() user: User,
   ): Promise<TaskResponseDto> {
-    const task = await this.tasksService.update(taskId, updateTaskDto);
+    const task = await this.tasksService.update(taskId, updateTaskDto, user);
     return this.toResponseDto(task);
   }
 
-  @UseGuards(AdminGuard)
   @Delete(":taskId")
-  async remove(@Param("taskId", ParseIntPipe) taskId: number): Promise<void> {
-    await this.tasksService.remove(taskId);
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async remove(
+    @Param("taskId", ParseIntPipe) taskId: number,
+    @CurrentUser() user: User,
+  ): Promise<void> {
+    await this.tasksService.remove(taskId, user);
   }
 
-  @UseGuards(AdminGuard)
   @Post(":taskId/assign")
-  async assign(
+  async assignPost(
     @Param("taskId", ParseIntPipe) taskId: number,
     @Body() assignTaskDto: AssignTaskDto,
+    @CurrentUser() user: User,
   ): Promise<TaskResponseDto> {
-    const task = await this.tasksService.assign(taskId, assignTaskDto.userId);
+    const task = await this.tasksService.assign(taskId, assignTaskDto.userId, user);
     return this.toResponseDto(task);
   }
 
-  @UseGuards(AdminGuard)
+  @Patch(":taskId/assign")
+  async assignPatch(
+    @Param("taskId", ParseIntPipe) taskId: number,
+    @Body() assignTaskDto: AssignTaskDto,
+    @CurrentUser() user: User,
+  ): Promise<TaskResponseDto> {
+    const task = await this.tasksService.assign(taskId, assignTaskDto.userId, user);
+    return this.toResponseDto(task);
+  }
+
   @Post(":taskId/unassign")
-  async unassign(@Param("taskId", ParseIntPipe) taskId: number): Promise<TaskResponseDto> {
-    const task = await this.tasksService.unassign(taskId);
+  async unassignPost(
+    @Param("taskId", ParseIntPipe) taskId: number,
+    @CurrentUser() user: User,
+  ): Promise<TaskResponseDto> {
+    const task = await this.tasksService.unassign(taskId, user);
     return this.toResponseDto(task);
   }
 
-  @UseGuards(AdminGuard)
+  @Patch(":taskId/unassign")
+  async unassignPatch(
+    @Param("taskId", ParseIntPipe) taskId: number,
+    @CurrentUser() user: User,
+  ): Promise<TaskResponseDto> {
+    const task = await this.tasksService.unassign(taskId, user);
+    return this.toResponseDto(task);
+  }
+
   @Post(":taskId/validate")
-  async validate(@Param("taskId", ParseIntPipe) taskId: number): Promise<TaskResponseDto> {
-    const task = await this.tasksService.validate(taskId);
+  async validatePost(
+    @Param("taskId", ParseIntPipe) taskId: number,
+    @CurrentUser() user: User,
+  ): Promise<TaskResponseDto> {
+    const task = await this.tasksService.validate(taskId, user);
     return this.toResponseDto(task);
   }
 
-  @UseGuards(AdminGuard)
+  @Patch(":taskId/validate")
+  async validatePatch(
+    @Param("taskId", ParseIntPipe) taskId: number,
+    @CurrentUser() user: User,
+  ): Promise<TaskResponseDto> {
+    const task = await this.tasksService.validate(taskId, user);
+    return this.toResponseDto(task);
+  }
+
+  @ApiOperation({ summary: "Set task dependencies with cycle detection" })
+  @ApiResponse({ status: 200, description: "Dependencies updated", type: TaskResponseDto })
+  @ApiResponse({ status: 400, description: "Self or cross-project dependency error" })
+  @ApiResponse({ status: 401, description: "Unauthorized" })
+  @ApiResponse({ status: 403, description: "Forbidden - Insufficient permissions" })
+  @ApiResponse({ status: 404, description: "Task or dependency not found" })
+  @ApiResponse({ status: 409, description: "Dependency cycle detected or project is ARCHIVED" })
+  @Put(":taskId/dependencies")
+  async setDependencies(
+    @Param("taskId", ParseIntPipe) taskId: number,
+    @Body() dto: SetDependenciesDto,
+    @CurrentUser() user: User,
+  ): Promise<TaskResponseDto> {
+    const task = await this.tasksService.setDependencies(taskId, dto, user);
+    return this.toResponseDto(task);
+  }
+
   @Get(":taskId/comments")
   async getComments(
     @CurrentUser() user: User,
     @Param("taskId", ParseIntPipe) taskId: number,
   ): Promise<CommentResponseDto[]> {
-    const comments = await this.tasksService.getMyTaskComments(taskId, user.userId, true);
+    const comments = await this.tasksService.getMyTaskComments(
+      taskId,
+      user.userId,
+      user.role === UserRole.ADMIN,
+    );
     return comments.map((comment) => this.toCommentResponseDto(comment));
   }
 
-  @UseGuards(AdminGuard)
   @Post(":taskId/comments")
-  async commentAsAdmin(
+  async commentOnTask(
     @CurrentUser() user: User,
     @Param("taskId", ParseIntPipe) taskId: number,
     @Body() comment: CreateCommentDto,
@@ -217,18 +284,34 @@ export class TasksController {
       taskId,
       user.userId,
       comment.content,
-      true,
+      user,
     );
     return this.toCommentResponseDto(created);
   }
 
-  @UseGuards(AdminGuard)
+  @Put(":taskId/comments/:commentId")
+  async updateTaskComment(
+    @CurrentUser() user: User,
+    @Param("taskId", ParseIntPipe) taskId: number,
+    @Param("commentId", ParseIntPipe) commentId: number,
+    @Body() comment: CreateCommentDto,
+  ): Promise<CommentResponseDto> {
+    const updated = await this.tasksService.updateComment(
+      taskId,
+      commentId,
+      user.userId,
+      comment.content,
+    );
+    return this.toCommentResponseDto(updated);
+  }
+
   @Delete(":taskId/comments/:commentId")
-  async removeCommentAsAdmin(
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async removeTaskComment(
     @CurrentUser() user: User,
     @Param("taskId", ParseIntPipe) taskId: number,
     @Param("commentId", ParseIntPipe) commentId: number,
   ): Promise<void> {
-    await this.tasksService.removeComment(taskId, commentId, user.userId, true);
+    await this.tasksService.removeComment(taskId, commentId, user.userId, user);
   }
 }

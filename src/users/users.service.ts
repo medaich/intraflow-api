@@ -13,6 +13,10 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Invited } from "./entities/invited.entity";
 import { ConfigService } from "@nestjs/config";
 import { SignupDto } from "../auth/dto/signup.dto";
+import { Team } from "../teams/entities/team.entity";
+import { TeamMembership, TeamMemberRole } from "../teams/entities/team-membership.entity";
+import { Task, TaskStatus } from "../tasks/entities/task.entity";
+import { Comment } from "../tasks/entities/comment.entity";
 
 @Injectable()
 export class UsersService {
@@ -21,9 +25,7 @@ export class UsersService {
     private readonly invitedRepo: Repository<Invited>,
     @InjectRepository(User)
     private readonly usersRepository: Repository<User>,
-
     private readonly entityManager: EntityManager,
-
     private readonly configService: ConfigService,
   ) {}
 
@@ -33,7 +35,9 @@ export class UsersService {
   }
 
   async findAll(): Promise<User[]> {
-    const users = await this.usersRepository.find();
+    const users = await this.usersRepository.find({
+      relations: ["membership"],
+    });
     return users.map((user) => new User({ ...user, password: undefined }));
   }
 
@@ -50,6 +54,7 @@ export class UsersService {
     if (!userId) return null;
     return this.usersRepository.findOne({
       where: { userId },
+      relations: ["membership"],
     });
   }
 
@@ -57,13 +62,19 @@ export class UsersService {
     if (!userId && !email) return null;
 
     if (userId) {
-      const user = await this.usersRepository.findOneBy({ userId });
+      const user = await this.usersRepository.findOne({
+        where: { userId },
+        relations: ["membership"],
+      });
       if (!user) throw new NotFoundException("No user found!");
       return new User({ ...user, password: undefined });
     }
 
     if (email) {
-      const user = await this.usersRepository.findOneBy({ email: email.toLowerCase() });
+      const user = await this.usersRepository.findOne({
+        where: { email: email.toLowerCase() },
+        relations: ["membership"],
+      });
       if (user) {
         return new User({ ...user, password: undefined });
       }
@@ -80,24 +91,65 @@ export class UsersService {
       throw new BadRequestException("Admins cannot delete their own account");
     }
 
-    const user = await this.usersRepository.findOne({ where: { userId } });
-    if (!user) {
-      throw new NotFoundException("User not found");
-    }
-
-    if (user.role === UserRole.ADMIN) {
-      const adminCount = await this.usersRepository.count({
-        where: { role: UserRole.ADMIN },
-      });
-      if (adminCount <= 1) {
-        throw new BadRequestException("Cannot delete the last remaining administrator");
+    await this.entityManager.transaction(async (manager) => {
+      const user = await manager.findOne(User, { where: { userId } });
+      if (!user) {
+        throw new NotFoundException("User not found");
       }
-    }
 
-    await this.usersRepository.softDelete(userId);
+      if (user.role === UserRole.ADMIN) {
+        const adminCount = await manager.count(User, {
+          where: { role: UserRole.ADMIN },
+        });
+        if (adminCount <= 1) {
+          throw new BadRequestException("Cannot delete the last remaining administrator");
+        }
+      }
+
+      // Soft delete the user
+      await manager.softDelete(User, userId);
+
+      // Check for team membership
+      const membership = await manager.findOne(TeamMembership, { where: { userId } });
+      if (membership) {
+        await manager.delete(TeamMembership, { id: membership.id });
+
+        // Reset non-COMPLETED tasks in this team's projects
+        const tasksToReset = await manager
+          .createQueryBuilder(Task, "task")
+          .innerJoinAndSelect("task.project", "project")
+          .where("project.team_id = :teamId", { teamId: membership.teamId })
+          .andWhere("task.assigned_to = :userId", { userId })
+          .andWhere("task.status != :completedStatus", { completedStatus: TaskStatus.COMPLETED })
+          .andWhere("task.deleted_at IS NULL")
+          .getMany();
+
+        for (const task of tasksToReset) {
+          task.assignedTo = null;
+          task.status = TaskStatus.UNASSIGNED;
+          task.startedAt = null;
+          task.submittedAt = null;
+
+          await manager.save(Task, task);
+
+          const comment = manager.create(Comment, {
+            content: `[System] User was deactivated. Task reset to UNASSIGNED.`,
+            user: null,
+            task,
+            isSystem: true,
+          });
+
+          await manager.save(Comment, comment);
+        }
+      }
+    });
   }
 
-  async invite(email: string, role: UserRole = UserRole.EMPLOYEE): Promise<Invited> {
+  async invite(
+    email: string,
+    role: UserRole = UserRole.EMPLOYEE,
+    teamId?: number,
+  ): Promise<Invited> {
     const normalizedEmail = email.toLowerCase();
     const pastInvites = await this.invitedRepo.find({
       where: {
@@ -120,12 +172,20 @@ export class UsersService {
       throw new ConflictException("This email is already registered");
     }
 
+    if (teamId !== undefined && teamId !== null) {
+      const team = await this.entityManager.findOne(Team, { where: { teamId } });
+      if (!team) {
+        throw new NotFoundException(`Team with id ${teamId} not found`);
+      }
+    }
+
     const expiration = Number(this.configService.get("TOKEN_EXPIRATION")) || 86400;
     const expiresAt = new Date(Date.now() + expiration * 1000);
 
     const invited = this.invitedRepo.create({
       email: normalizedEmail,
       role,
+      teamId: teamId ?? null,
       expiresAt,
     });
 
@@ -174,6 +234,21 @@ export class UsersService {
       });
 
       const savedUser = await manager.save(User, user);
+
+      // If invite has teamId, create membership in the same transaction
+      if (invited.teamId) {
+        const team = await manager.findOne(Team, { where: { teamId: invited.teamId } });
+        // If team was deleted between invite and signup, signup still succeeds without membership
+        if (team && !team.deletedAt) {
+          const membership = manager.create(TeamMembership, {
+            teamId: invited.teamId,
+            userId: savedUser.userId,
+            role: TeamMemberRole.MEMBER,
+          });
+          await manager.save(TeamMembership, membership);
+        }
+      }
+
       return savedUser;
     });
   }

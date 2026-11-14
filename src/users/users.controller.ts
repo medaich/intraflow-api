@@ -39,7 +39,7 @@ export class UsersController {
   @UseGuards(AdminGuard)
   @Post("invite")
   async invite(@Body() inviteDto: InviteDto) {
-    return this.usersService.invite(inviteDto.email, inviteDto.role);
+    return this.usersService.invite(inviteDto.email, inviteDto.role, inviteDto.teamId);
   }
 
   @ApiOperation({ summary: "Get currently authenticated user profile" })

@@ -1,4 +1,4 @@
-import { IsEmail, IsEnum, IsOptional } from "class-validator";
+import { IsEmail, IsEnum, IsInt, IsOptional } from "class-validator";
 import { UserRole } from "../entities/user.entity";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 
@@ -11,4 +11,9 @@ export class InviteDto {
   @IsOptional()
   @IsEnum(UserRole)
   role?: UserRole;
+
+  @ApiPropertyOptional({ example: 1 })
+  @IsOptional()
+  @IsInt()
+  teamId?: number;
 }

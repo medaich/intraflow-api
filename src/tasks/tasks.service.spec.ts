@@ -10,14 +10,21 @@ import { TasksService } from './tasks.service';
 import { Task, TaskStatus } from './entities/task.entity';
 import { User } from '../users/entities/user.entity';
 import { Comment } from './entities/comment.entity';
+import { Project } from '../projects/entities/project.entity';
+import { AccessPolicyService } from '../auth/policy/access-policy.service';
 
 describe('TasksService (Persistence, Lifecycle, State Machine & Authorization)', () => {
   let tasksService: TasksService;
   let tasksRepo: jest.Mocked<Partial<Repository<Task>>>;
   let usersRepo: jest.Mocked<Partial<Repository<User>>>;
   let commentRepo: jest.Mocked<Partial<Repository<Comment>>>;
+  let projectRepo: jest.Mocked<Partial<Repository<Project>>>;
 
   beforeEach(async () => {
+    projectRepo = {
+      findOne: jest.fn(),
+      find: jest.fn(),
+    };
     tasksRepo = {
       save: jest.fn().mockImplementation((t: Task) => Promise.resolve(t)),
       findOne: jest.fn(),
@@ -27,6 +34,7 @@ describe('TasksService (Persistence, Lifecycle, State Machine & Authorization)',
     };
 
     usersRepo = {
+      findOne: jest.fn().mockResolvedValue(new User({ userId: 5 })),
       findOneBy: jest.fn(),
     };
 
@@ -40,9 +48,11 @@ describe('TasksService (Persistence, Lifecycle, State Machine & Authorization)',
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         TasksService,
+        AccessPolicyService,
         { provide: getRepositoryToken(Task), useValue: tasksRepo },
         { provide: getRepositoryToken(User), useValue: usersRepo },
         { provide: getRepositoryToken(Comment), useValue: commentRepo },
+        { provide: getRepositoryToken(Project), useValue: projectRepo },
       ],
     }).compile();
 
@@ -180,10 +190,12 @@ describe('TasksService (Persistence, Lifecycle, State Machine & Authorization)',
     it('findOne loads assignedTo relation', async () => {
       tasksRepo.findOne!.mockResolvedValue(new Task({ taskId: 1 }));
       await tasksService.findOne(1);
-      expect(tasksRepo.findOne).toHaveBeenCalledWith({
-        where: { taskId: 1 },
-        relations: ['assignedTo'],
-      });
+      expect(tasksRepo.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { taskId: 1 },
+          relations: expect.arrayContaining(['assignedTo']),
+        }),
+      );
     });
 
     it('getComment loads user and task relations with expected selection', async () => {
