@@ -3,6 +3,7 @@ import {
   CreateDateColumn,
   DeleteDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   OneToMany,
@@ -20,6 +21,10 @@ export enum ProjectStatus {
   ARCHIVED = 'ARCHIVED',
 }
 
+@Index("idx_projects_name", ["name"])
+@Index("idx_projects_dates", ["endDate", "startDate"])
+@Index("idx_projects_status", ["status"])
+@Index("idx_projects_team_id", ["teamId"])
 @Entity('projects')
 export class Project {
   constructor(project?: Partial<Project>) {

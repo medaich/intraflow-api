@@ -1,6 +1,7 @@
 import {
   Column,
   Entity,
+  Index,
   PrimaryGeneratedColumn,
   CreateDateColumn,
   UpdateDateColumn,
@@ -17,6 +18,8 @@ export enum UserRole {
   ADMIN = "ADMIN",
 }
 
+@Index("idx_users_role", ["role"])
+@Index("idx_users_name", ["name"])
 @Entity("users")
 export class User {
   constructor(user?: Partial<User>) {
@@ -58,6 +61,14 @@ export class User {
     default: UserRole.EMPLOYEE,
   })
   role: UserRole;
+
+  @Column({
+    name: "sessions_valid_from",
+    type: "timestamp",
+    precision: 6,
+    nullable: true,
+  })
+  sessionsValidFrom: Date | null;
 
   @CreateDateColumn({ name: "created_at", type: "timestamp", precision: 6 })
   createdAt: Date;

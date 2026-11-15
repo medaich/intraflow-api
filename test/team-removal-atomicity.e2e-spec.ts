@@ -186,6 +186,55 @@ describe('Team Removal Side Effects & Atomicity E2E Tests (Real DB)', () => {
     expect(systemComment?.user).toBeNull();
   });
 
+  it('User soft-deletion resets standalone open tasks and adds system comment', async () => {
+    const standaloneEmp = await createAndSignInUser(
+      app,
+      userRepo,
+      authService,
+      'standalone.emp@intraflow.dev',
+      UserRole.EMPLOYEE,
+      'Standalone Emp',
+    );
+
+    // Admin creates a standalone open task assigned to this employee
+    const standaloneTask = await taskRepo.save(
+      taskRepo.create({
+        name: 'Standalone Open Task',
+        assignedTo: standaloneEmp.user,
+        status: TaskStatus.IN_PROGRESS,
+        startDate: new Date(),
+        endDate: new Date(),
+        startedAt: new Date(),
+      }),
+    );
+
+    // Admin soft-deletes the user
+    const delRes = await request(app.getHttpServer())
+      .delete(`/users/${standaloneEmp.user.userId}`)
+      .set('Cookie', adminCookies);
+
+    expect(delRes.status).toBe(200);
+
+    // Verify task is reset to UNASSIGNED and unlinked from user
+    const taskAfter = await taskRepo.findOne({
+      where: { taskId: standaloneTask.taskId },
+      relations: ['assignedTo'],
+    });
+    expect(taskAfter?.assignedTo).toBeNull();
+    expect(taskAfter?.status).toBe(TaskStatus.UNASSIGNED);
+    expect(taskAfter?.startedAt).toBeNull();
+
+    // Verify system comment was added
+    const comments = await commentRepo.find({
+      where: { task: { taskId: standaloneTask.taskId } },
+      relations: ['user'],
+    });
+    const systemComment = comments.find((c) => c.content.includes('[System]'));
+    expect(systemComment).toBeDefined();
+    expect(systemComment?.isSystem).toBe(true);
+    expect(systemComment?.user).toBeNull();
+  });
+
   it('Atomicity: mid-transaction failure rolls back all changes (membership, task, comments)', async () => {
     const team = await teamRepo.save(teamRepo.create({ name: 'Atomicity Team' }));
     const emp = await createAndSignInUser(app, userRepo, authService, 'atomicity.emp@intraflow.dev', UserRole.EMPLOYEE, 'Atomicity Emp');

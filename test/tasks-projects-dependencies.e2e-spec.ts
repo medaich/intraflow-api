@@ -289,5 +289,85 @@ describe('Tasks in Projects & Dependencies E2E Tests (Real DB)', () => {
 
       expect(delRes.status).toBe(204);
     });
+
+    it('concurrent assign calls on same task -> exactly one succeeds, other gets 409', async () => {
+      const taskConcurrent = await taskRepo.save(
+        taskRepo.create({
+          name: 'Concurrent Assign Task',
+          projectId: project1.projectId,
+          status: TaskStatus.UNASSIGNED,
+          startDate: new Date(),
+          endDate: new Date(),
+        }),
+      );
+
+      const [res1, res2] = await Promise.all([
+        request(app.getHttpServer())
+          .patch(`/tasks/${taskConcurrent.taskId}/assign`)
+          .set('Cookie', adminCookies)
+          .send({ userId: mem1User.userId }),
+        request(app.getHttpServer())
+          .patch(`/tasks/${taskConcurrent.taskId}/assign`)
+          .set('Cookie', adminCookies)
+          .send({ userId: mod1User.userId }),
+      ]);
+
+      const statuses = [res1.status, res2.status].sort();
+      expect(statuses).toEqual([200, 409]);
+
+      const updated = await taskRepo.findOne({
+        where: { taskId: taskConcurrent.taskId },
+        relations: ['assignedTo'],
+      });
+      expect(updated?.status).toBe(TaskStatus.PENDING);
+      expect([mem1User.userId, mod1User.userId]).toContain(updated?.assignedTo?.userId);
+    });
+
+    it('concurrent A->B and B->A dependency updates -> exactly one succeeds, no cycle created', async () => {
+      const taskX = await taskRepo.save(
+        taskRepo.create({
+          name: 'Task X',
+          projectId: project1.projectId,
+          status: TaskStatus.UNASSIGNED,
+          startDate: new Date(),
+          endDate: new Date(),
+        }),
+      );
+      const taskY = await taskRepo.save(
+        taskRepo.create({
+          name: 'Task Y',
+          projectId: project1.projectId,
+          status: TaskStatus.UNASSIGNED,
+          startDate: new Date(),
+          endDate: new Date(),
+        }),
+      );
+
+      const [res1, res2] = await Promise.all([
+        request(app.getHttpServer())
+          .put(`/tasks/${taskX.taskId}/dependencies`)
+          .set('Cookie', adminCookies)
+          .send({ dependsOn: [taskY.taskId] }),
+        request(app.getHttpServer())
+          .put(`/tasks/${taskY.taskId}/dependencies`)
+          .set('Cookie', adminCookies)
+          .send({ dependsOn: [taskX.taskId] }),
+      ]);
+
+      const statuses = [res1.status, res2.status].sort();
+      expect(statuses).toEqual([200, 409]);
+
+      // Verify no cycle exists in DB
+      const depX = await request(app.getHttpServer())
+        .get(`/tasks/${taskX.taskId}`)
+        .set('Cookie', adminCookies);
+      const depY = await request(app.getHttpServer())
+        .get(`/tasks/${taskY.taskId}`)
+        .set('Cookie', adminCookies);
+
+      const xDependsOnY = (depX.body.dependsOn || []).includes(taskY.taskId);
+      const yDependsOnX = (depY.body.dependsOn || []).includes(taskX.taskId);
+      expect(xDependsOnY && yDependsOnX).toBe(false);
+    });
   });
 });

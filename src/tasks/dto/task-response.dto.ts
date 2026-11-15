@@ -1,5 +1,6 @@
 import { Exclude, Expose, Type } from "class-transformer";
-import { TaskStatus } from "../entities/task.entity";
+import { TaskPriority, TaskStatus } from "../entities/task.entity";
+import { TaskTimeState } from "../task-time-state";
 
 @Exclude()
 export class TaskAssigneeDto {
@@ -45,6 +46,12 @@ export class TaskResponseDto {
 
   @Expose()
   status: TaskStatus;
+
+  @Expose()
+  priority: TaskPriority;
+
+  @Expose()
+  timeState: TaskTimeState;
 
   @Expose()
   dependsOn: number[];

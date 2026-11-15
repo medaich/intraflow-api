@@ -1,89 +1,52 @@
 import {
+  BadRequestException,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from "@nestjs/common";
-import { UsersService } from "src/users/users.service";
-import {
-  BinaryLike,
-  ScryptOptions,
-  randomBytes,
-  scrypt as _scrypt,
-  timingSafeEqual,
-} from "crypto";
+import { InjectRepository } from "@nestjs/typeorm";
+import { DataSource, IsNull, Repository } from "typeorm";
+import { ConfigService } from "@nestjs/config";
+import { UsersService } from "../users/users.service";
+import { MailService } from "../mail/mail.service";
+import { createHash, randomBytes } from "crypto";
 import { SigninDto } from "./dto/signin.dto";
 import { SignupDto } from "./dto/signup.dto";
-import { User } from "src/users/entities/user.entity";
+import { ResetPasswordDto } from "./dto/reset-password.dto";
+import { User } from "../users/entities/user.entity";
+import { PasswordResetToken } from "./entities/password-reset-token.entity";
+import {
+  DUMMY_HASH,
+  hashPassword,
+  verifyPassword,
+} from "./password-hasher";
 
-const scryptAsync = (
-  password: BinaryLike,
-  salt: BinaryLike,
-  keylen: number,
-  options?: ScryptOptions,
-): Promise<Buffer> =>
-  new Promise((resolve, reject) => {
-    if (options) {
-      _scrypt(password, salt, keylen, options, (err, derivedKey) => {
-        if (err) reject(err);
-        else resolve(derivedKey);
-      });
-    } else {
-      _scrypt(password, salt, keylen, (err, derivedKey) => {
-        if (err) reject(err);
-        else resolve(derivedKey);
-      });
-    }
-  });
+export { DUMMY_HASH, hashPassword, verifyPassword };
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
   // Precomputed dummy hash so scrypt always runs with equal cost on missing users
-  private readonly dummyHash =
-    "v2.0123456789abcdef0123456789abcdef.a8f5b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7";
+  private readonly dummyHash = DUMMY_HASH;
 
-  constructor(private usersService: UsersService) {}
+  constructor(
+    private usersService: UsersService,
+    @InjectRepository(PasswordResetToken)
+    private resetTokenRepo: Repository<PasswordResetToken>,
+    private mailService: MailService,
+    private configService: ConfigService,
+    private dataSource: DataSource,
+  ) {}
 
   async hashPassword(password: string): Promise<string> {
-    const salt = randomBytes(16).toString("hex");
-    const hash = await scryptAsync(password, salt, 64, {
-      N: 16384,
-      r: 8,
-      p: 1,
-    });
-    return `v2.${salt}.${hash.toString("hex")}`;
+    return hashPassword(password);
   }
 
   async verifyPassword(
     password: string,
     storedPasswordHash: string,
   ): Promise<boolean> {
-    try {
-      const parts = storedPasswordHash.split(".");
-      if (parts.length === 3 && parts[0] === "v2") {
-        const [, salt, expectedHashHex] = parts;
-        const computedHash = await scryptAsync(password, salt, 64, {
-          N: 16384,
-          r: 8,
-          p: 1,
-        });
-        const expectedBuf = Buffer.from(expectedHashHex, "hex");
-        if (computedHash.length !== expectedBuf.length) {
-          return false;
-        }
-        return timingSafeEqual(computedHash, expectedBuf);
-      } else if (parts.length === 2) {
-        // Legacy backward-compatible format: <salt>.<hash> (32 bytes)
-        const [salt, expectedHashHex] = parts;
-        const computedHash = await scryptAsync(password, salt, 32);
-        const expectedBuf = Buffer.from(expectedHashHex, "hex");
-        if (computedHash.length !== expectedBuf.length) {
-          return false;
-        }
-        return timingSafeEqual(computedHash, expectedBuf);
-      }
-      return false;
-    } catch {
-      return false;
-    }
+    return verifyPassword(password, storedPasswordHash);
   }
 
   async signup(token: string, signupDto: SignupDto): Promise<User> {
@@ -109,4 +72,95 @@ export class AuthService {
 
     return user;
   }
+
+  async forgotPassword(email: string): Promise<{ message: string }> {
+    const normalizedEmail = email.trim().toLowerCase();
+    const user = await this.usersService.findByEmailWithPassword(normalizedEmail);
+
+    if (!user || user.deletedAt) {
+      // Burn equal CPU cycles with dummy scrypt verification to prevent timing attacks
+      await this.verifyPassword("dummy_timing_padding", this.dummyHash);
+      return {
+        message:
+          "If that email address is in our database, we will send you an email to reset your password.",
+      };
+    }
+
+    const token = randomBytes(32).toString("hex");
+    const tokenHash = createHash("sha256").update(token).digest("hex");
+    const ttlSeconds = Number(this.configService.get<number>("RESET_TOKEN_TTL", 3600));
+    const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
+
+    // Invalidate active reset tokens for this user
+    await this.resetTokenRepo.update(
+      { userId: user.userId, usedAt: IsNull() },
+      { usedAt: new Date() },
+    );
+
+    // Save new reset token
+    await this.resetTokenRepo.save({
+      userId: user.userId,
+      tokenHash,
+      expiresAt,
+    });
+
+    // Dispatch reset email asynchronously without awaiting SMTP in request path
+    void this.mailService
+      .sendPasswordReset(user.email, token)
+      .catch((err: Error) => {
+        this.logger.error(
+          `Failed to send password reset email to ${user.email}: ${err.message}`,
+          err.stack,
+        );
+      });
+
+    return {
+      message:
+        "If that email address is in our database, we will send you an email to reset your password.",
+    };
+  }
+
+  async resetPassword(resetDto: ResetPasswordDto): Promise<{ message: string }> {
+    const { token, password } = resetDto;
+    const tokenHash = createHash("sha256").update(token).digest("hex");
+
+    return await this.dataSource.transaction(async (manager) => {
+      const tokenRepo = manager.getRepository(PasswordResetToken);
+      const resetToken = await tokenRepo.findOne({
+        where: { tokenHash },
+        lock: { mode: "pessimistic_write" },
+      });
+
+      if (
+        !resetToken ||
+        resetToken.usedAt !== null ||
+        resetToken.expiresAt.getTime() <= Date.now()
+      ) {
+        throw new BadRequestException("Invalid or expired token");
+      }
+
+      const userRepo = manager.getRepository(User);
+      const user = await userRepo.findOne({
+        where: { userId: resetToken.userId },
+        lock: { mode: "pessimistic_write" },
+      });
+
+      if (!user || user.deletedAt) {
+        throw new BadRequestException("Invalid or expired token");
+      }
+
+      // Mark token as used
+      resetToken.usedAt = new Date();
+      await tokenRepo.save(resetToken);
+
+      // Hash new password and set sessionsValidFrom to now
+      const hashedPassword = await this.hashPassword(password);
+      user.password = hashedPassword;
+      user.sessionsValidFrom = new Date();
+      await userRepo.save(user);
+
+      return { message: "Password has been reset successfully." };
+    });
+  }
 }
+

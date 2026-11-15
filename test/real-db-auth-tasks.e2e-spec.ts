@@ -7,7 +7,8 @@ import cookieSession from 'cookie-session';
 import { Express } from 'express';
 import { AppModule } from '../src/app.module';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, IsNull } from 'typeorm';
+import { ThrottlerStorage } from '@nestjs/throttler';
 import { User, UserRole } from '../src/users/entities/user.entity';
 import { Invited } from '../src/users/entities/invited.entity';
 import { Task, TaskStatus } from '../src/tasks/entities/task.entity';
@@ -205,13 +206,14 @@ describe('Real Database End-to-End Tests (MySQL intraflow_test)', () => {
 
     beforeAll(async () => {
       // Create and sign in an employee user
-      const inviteRes = await request(app.getHttpServer())
+      await request(app.getHttpServer())
         .post('/users/invite')
         .set('Cookie', adminCookies)
         .send({ email: 'hygiene@intraflow.dev', role: UserRole.EMPLOYEE });
 
+      const inviteRecord = await invitedRepo.findOneBy({ email: 'hygiene@intraflow.dev' });
       const signupRes = await request(app.getHttpServer())
-        .post(`/auth/signup?token=${inviteRes.body.token}`)
+        .post(`/auth/signup?token=${inviteRecord?.token}`)
         .send({
           name: 'Hygiene Tester',
           email: 'hygiene@intraflow.dev',
@@ -240,8 +242,8 @@ describe('Real Database End-to-End Tests (MySQL intraflow_test)', () => {
         .set('Cookie', adminCookies);
 
       expect(res.status).toBe(200);
-      expect(Array.isArray(res.body)).toBe(true);
-      for (const u of res.body) {
+      expect(Array.isArray(res.body.data)).toBe(true);
+      for (const u of res.body.data) {
         expect(u.password).toBeUndefined();
         expect(Object.prototype.hasOwnProperty.call(u, 'password')).toBe(false);
       }
@@ -265,6 +267,16 @@ describe('Real Database End-to-End Tests (MySQL intraflow_test)', () => {
       expect(res.status).toBe(200);
       expect(res.body.password).toBeUndefined();
       expect(Object.prototype.hasOwnProperty.call(res.body, 'password')).toBe(false);
+    });
+
+    it('GET /users/me exposes strictly whitelisted fields matching UserResponseDto', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/users/me')
+        .set('Cookie', employeeCookies);
+
+      expect(res.status).toBe(200);
+      const keys = Object.keys(res.body as Record<string, unknown>).sort();
+      expect(keys).toEqual(['createdAt', 'email', 'membership', 'name', 'role', 'userId']);
     });
 
     it('Task response with assignedTo never leaks password', async () => {
@@ -312,13 +324,14 @@ describe('Real Database End-to-End Tests (MySQL intraflow_test)', () => {
 
     beforeAll(async () => {
       // Create employee
-      const inviteRes = await request(app.getHttpServer())
+      await request(app.getHttpServer())
         .post('/users/invite')
         .set('Cookie', adminCookies)
         .send({ email: 'lifecycle@intraflow.dev', role: UserRole.EMPLOYEE });
 
+      const inviteRecord = await invitedRepo.findOneBy({ email: 'lifecycle@intraflow.dev' });
       await request(app.getHttpServer())
-        .post(`/auth/signup?token=${inviteRes.body.token}`)
+        .post(`/auth/signup?token=${inviteRecord?.token}`)
         .send({
           name: 'Lifecycle Worker',
           email: 'lifecycle@intraflow.dev',
@@ -499,13 +512,14 @@ describe('Real Database End-to-End Tests (MySQL intraflow_test)', () => {
 
   describe('5. Stale Sessions & Real-Time DB Hydration (Item 3)', () => {
     it('(a) Soft-deleting an active user holding a valid cookie returns 401 on next request', async () => {
-      const inviteRes = await request(app.getHttpServer())
+      await request(app.getHttpServer())
         .post('/users/invite')
         .set('Cookie', adminCookies)
         .send({ email: 'to-deactivate@intraflow.dev', role: UserRole.EMPLOYEE });
 
+      const inviteRecord = await invitedRepo.findOneBy({ email: 'to-deactivate@intraflow.dev' });
       await request(app.getHttpServer())
-        .post(`/auth/signup?token=${inviteRes.body.token}`)
+        .post(`/auth/signup?token=${inviteRecord?.token}`)
         .send({
           name: 'Soon Deactivated',
           email: 'to-deactivate@intraflow.dev',
@@ -537,13 +551,14 @@ describe('Real Database End-to-End Tests (MySQL intraflow_test)', () => {
     });
 
     it('(b) Demoting a logged-in admin to EMPLOYEE allows /users/me but returns 403 on admin routes', async () => {
-      const inviteRes = await request(app.getHttpServer())
+      await request(app.getHttpServer())
         .post('/users/invite')
         .set('Cookie', adminCookies)
         .send({ email: 'admin-to-demote@intraflow.dev', role: UserRole.ADMIN });
 
+      const inviteRecord = await invitedRepo.findOneBy({ email: 'admin-to-demote@intraflow.dev' });
       await request(app.getHttpServer())
-        .post(`/auth/signup?token=${inviteRes.body.token}`)
+        .post(`/auth/signup?token=${inviteRecord?.token}`)
         .send({
           name: 'Admin Demote',
           email: 'admin-to-demote@intraflow.dev',
@@ -633,6 +648,45 @@ describe('Real Database End-to-End Tests (MySQL intraflow_test)', () => {
         });
       expect(otherIpRes.status).toBe(401);
     });
+
+    it('with TRUST_PROXY=0 rotating X-Forwarded-For does not bypass rate limit (6th attempt returns 429)', async () => {
+      const expressApp = app.getHttpAdapter().getInstance() as Express;
+      const prevTrustProxy = expressApp.get('trust proxy');
+      expressApp.set('trust proxy', 0);
+      try {
+        const storageService = app.get(ThrottlerStorage);
+        if (storageService?.storage?.clear) {
+          storageService.storage.clear();
+        }
+        if (storageService?.hitExpirations?.clear) {
+          storageService.hitExpirations.clear();
+        }
+
+        // 5 attempts allowed with different rotated X-Forwarded-For headers
+        for (let i = 1; i <= 5; i++) {
+          const res = await request(app.getHttpServer())
+            .post('/auth/signin')
+            .set('X-Forwarded-For', `198.51.100.${i}`)
+            .send({
+              email: 'admin@intraflow.dev',
+              password: 'BadPassword!',
+            });
+          expect(res.status).toBe(401);
+        }
+
+        // 6th attempt with yet another rotated IP must still be blocked (429) because TRUST_PROXY=0 ignores the header
+        const res6 = await request(app.getHttpServer())
+          .post('/auth/signin')
+          .set('X-Forwarded-For', '198.51.100.99')
+          .send({
+            email: 'admin@intraflow.dev',
+            password: 'BadPassword!',
+          });
+        expect(res6.status).toBe(429);
+      } finally {
+        expressApp.set('trust proxy', prevTrustProxy);
+      }
+    });
   });
 
   describe('8. Admin Self-Deletion Protection', () => {
@@ -644,6 +698,43 @@ describe('Real Database End-to-End Tests (MySQL intraflow_test)', () => {
 
       expect(res.status).toBe(400);
       expect(res.body.message).toContain('cannot delete their own account');
+    });
+
+    it('concurrent deletion of two admins by a third admin ensures at least one admin remains', async () => {
+      // Create two additional admins
+      const admin2 = await userRepo.save(
+        userRepo.create({
+          email: 'admin2.concurrent@intraflow.dev',
+          password: 'Password123!',
+          name: 'Admin Two',
+          role: UserRole.ADMIN,
+        }),
+      );
+      const admin3 = await userRepo.save(
+        userRepo.create({
+          email: 'admin3.concurrent@intraflow.dev',
+          password: 'Password123!',
+          name: 'Admin Three',
+          role: UserRole.ADMIN,
+        }),
+      );
+
+      // Master admin concurrently deletes both admin2 and admin3
+      await Promise.all([
+        request(app.getHttpServer())
+          .delete(`/users/${admin2.userId}`)
+          .set('Cookie', adminCookies),
+        request(app.getHttpServer())
+          .delete(`/users/${admin3.userId}`)
+          .set('Cookie', adminCookies),
+      ]);
+
+      // At least one active admin must remain in DB
+      const remainingAdmins = await userRepo.find({
+        where: { role: UserRole.ADMIN, deletedAt: IsNull() },
+      });
+      expect(remainingAdmins.length).toBeGreaterThanOrEqual(1);
+      expect(remainingAdmins.some((a) => a.email === 'admin@intraflow.dev')).toBe(true);
     });
   });
 });

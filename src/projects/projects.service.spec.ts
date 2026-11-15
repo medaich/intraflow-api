@@ -10,6 +10,7 @@ import { Task } from '../tasks/entities/task.entity';
 import { User, UserRole } from '../users/entities/user.entity';
 import { TeamMembership, TeamMemberRole } from '../teams/entities/team-membership.entity';
 import { AccessPolicyService } from '../auth/policy/access-policy.service';
+import { ClockService } from '../common/clock/clock.service';
 
 describe('ProjectsService (Unit Tests)', () => {
   let service: ProjectsService;
@@ -54,6 +55,7 @@ describe('ProjectsService (Unit Tests)', () => {
       providers: [
         ProjectsService,
         AccessPolicyService,
+        ClockService,
         { provide: getRepositoryToken(Project), useFactory: mockRepoFactory },
         { provide: getRepositoryToken(Team), useFactory: mockRepoFactory },
         { provide: getRepositoryToken(Task), useFactory: mockRepoFactory },
@@ -126,6 +128,91 @@ describe('ProjectsService (Unit Tests)', () => {
       await expect(
         service.update(1, { status: ProjectStatus.COMPLETED }, otherModUser),
       ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('create and find project', () => {
+    it('create throws NotFoundException if specified teamId does not exist', async () => {
+      teamRepo.findOne.mockResolvedValue(null);
+      await expect(
+        service.create({ name: 'New Project', teamId: 999 }, adminUser),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('create succeeds and returns enriched project', async () => {
+      teamRepo.findOne.mockResolvedValue(new Team({ teamId: 10 }));
+      projectRepo.save.mockResolvedValue(
+        new Project({ projectId: 5, name: 'Saved Project', teamId: 10, tasks: [] }),
+      );
+
+      const created = await service.create({ name: 'Saved Project', teamId: 10 }, adminUser);
+      expect(created.name).toBe('Saved Project');
+      expect(created.progress.percent).toBe(0);
+    });
+
+    it('findOne throws NotFoundException if project not found or inaccessible', async () => {
+      projectRepo.findOne.mockResolvedValue(null);
+      await expect(service.findOne(999, adminUser)).rejects.toThrow(NotFoundException);
+
+      projectRepo.findOne.mockResolvedValue(activeProject);
+      await expect(service.findOne(1, otherModUser)).rejects.toThrow(NotFoundException);
+    });
+
+    it('archive sets project status to ARCHIVED', async () => {
+      projectRepo.findOne.mockResolvedValue(activeProject);
+      const archived = await service.update(1, { status: ProjectStatus.ARCHIVED }, adminUser);
+      expect(archived.status).toBe(ProjectStatus.ARCHIVED);
+    });
+
+    it('findAll returns empty envelope when employee has no team', async () => {
+      const mockQb = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        getCount: jest.fn().mockResolvedValue(0),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+      };
+      projectRepo.createQueryBuilder.mockReturnValue(mockQb as never);
+      const userWithoutTeam = new User({ userId: 50, role: UserRole.EMPLOYEE, membership: null });
+      const res = await service.findAll({}, userWithoutTeam);
+      expect(res.data).toEqual([]);
+      expect(res.meta.total).toBe(0);
+    });
+
+    it('findAll returns paginated and enriched projects for admin with filters', async () => {
+      const mockQb = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        getCount: jest.fn().mockResolvedValue(1),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([activeProject]),
+      };
+      projectRepo.createQueryBuilder.mockReturnValue(mockQb as never);
+
+      const taskQb = {
+        select: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        groupBy: jest.fn().mockReturnThis(),
+        getRawMany: jest.fn().mockResolvedValue([{ projectId: 1, total: '2', completed: '1' }]),
+      };
+      taskRepo.createQueryBuilder.mockReturnValue(taskQb as never);
+
+      const res = await service.findAll(
+        { page: 1, limit: 10, teamId: 10, status: ProjectStatus.ACTIVE, search: 'Proj', sort: 'name:desc' },
+        adminUser,
+      );
+
+      expect(res.data).toHaveLength(1);
+      expect(res.data[0].progress.percent).toBe(50);
+      expect(res.meta.total).toBe(1);
     });
   });
 });

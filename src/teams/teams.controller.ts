@@ -9,6 +9,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiCookieAuth } from '@nestjs/swagger';
@@ -24,6 +25,8 @@ import { AddMemberDto } from './dto/add-member.dto';
 import { UpdateMemberDto } from './dto/update-member.dto';
 import { TeamResponseDto } from './dto/team-response.dto';
 import { TeamMemberResponseDto } from './dto/team-member-response.dto';
+import { TeamQueryDto } from './dto/team-query.dto';
+import { PaginatedResponseDto } from '../common/dto/paginated-response.dto';
 
 @ApiTags('teams')
 @ApiCookieAuth('session')
@@ -45,15 +48,21 @@ export class TeamsController {
   }
 
   @ApiOperation({ summary: 'List all teams (Admin only)' })
-  @ApiResponse({ status: 200, description: 'List of teams', type: [TeamResponseDto] })
+  @ApiResponse({ status: 200, description: 'Paginated list of teams' })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   @ApiResponse({ status: 403, description: 'Forbidden - Admin only' })
   @Get()
   @UseGuards(AuthGuard, AdminGuard)
-  async findAll(): Promise<TeamResponseDto[]> {
-    const teams = await this.teamsService.findAll();
-    return teams.map((t) =>
+  async findAll(@Query() query: TeamQueryDto): Promise<PaginatedResponseDto<TeamResponseDto>> {
+    const result = await this.teamsService.findAll(query);
+    const serialized = result.data.map((t) =>
       plainToInstance(TeamResponseDto, t, { excludeExtraneousValues: true }),
+    );
+    return new PaginatedResponseDto(
+      serialized,
+      result.meta.total,
+      result.meta.page,
+      result.meta.limit,
     );
   }
 

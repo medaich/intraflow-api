@@ -113,14 +113,14 @@ describe('Projects Lifecycle & Integrity E2E Tests (Real DB)', () => {
       expect(memRes.status).toBe(200);
     });
 
-    it('Project listing returns plain array with progress & overdue derived', async () => {
+    it('Project listing returns paginated envelope with progress & overdue derived', async () => {
       const res = await request(app.getHttpServer())
         .get('/projects')
         .set('Cookie', modCookies);
 
       expect(res.status).toBe(200);
-      expect(Array.isArray(res.body)).toBe(true);
-      const proj = res.body.find((p: any) => p.projectId === createdProject.projectId);
+      expect(Array.isArray(res.body.data)).toBe(true);
+      const proj = res.body.data.find((p: any) => p.projectId === createdProject.projectId);
       expect(proj).toBeDefined();
       expect(proj.progress).toBeDefined();
     });
@@ -367,8 +367,8 @@ describe('Projects Lifecycle & Integrity E2E Tests (Real DB)', () => {
         .set('Cookie', adminCookies);
 
       expect(res.status).toBe(200);
-      const fetchedA = res.body.find((p: any) => p.projectId === projA.projectId);
-      const fetchedB = res.body.find((p: any) => p.projectId === projB.projectId);
+      const fetchedA = res.body.data.find((p: any) => p.projectId === projA.projectId);
+      const fetchedB = res.body.data.find((p: any) => p.projectId === projB.projectId);
 
       expect(fetchedA).toBeDefined();
       expect(fetchedA.progress).toEqual({ completed: 2, total: 3, percent: 67 });

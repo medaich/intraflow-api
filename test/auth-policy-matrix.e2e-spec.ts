@@ -1,4 +1,5 @@
 import { INestApplication } from '@nestjs/common';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { getRepositoryToken } from '@nestjs/typeorm';
@@ -326,12 +327,17 @@ describe('Central Authorization Matrix (Table-Driven Real DB E2E)', () => {
     'POST /auth/signup',
     'POST /auth/signin',
     'POST /auth/signout',
+    'POST /auth/forgot-password',
+    'POST /auth/reset-password',
 
-    // User management & profile (verified in real-db-auth-tasks.e2e-spec.ts and password-hygiene-and-hydration.e2e-spec.ts)
+    // User management & profile (verified in real-db-auth-tasks.e2e-spec.ts, user-security-email-password.e2e-spec.ts)
     'POST /users/invite',
     'GET /users',
     'GET /users/me',
     'PATCH /users/me',
+    'PATCH /users/me/password',
+    'POST /users/me/email',
+    'POST /users/me/email/confirm',
     'GET /users/:userId',
     'DELETE /users/:userId',
 
@@ -369,6 +375,11 @@ describe('Central Authorization Matrix (Table-Driven Real DB E2E)', () => {
     'PATCH /tasks/:taskId/unassign',
     'POST /tasks/:taskId/validate',
     'PATCH /tasks/:taskId/validate',
+    'POST /tasks/:taskId/reject',
+    'POST /tasks/:taskId/attachments',
+    'GET /tasks/:taskId/attachments',
+    'GET /tasks/:taskId/attachments/:attachmentId/download',
+    'DELETE /tasks/:taskId/attachments/:attachmentId',
     'GET /tasks/my-tasks/:taskId/comments',
     'POST /tasks/my-tasks/:taskId/comments',
     'PUT /tasks/my-tasks/:taskId/comments/:commentId',
@@ -414,6 +425,36 @@ describe('Central Authorization Matrix (Table-Driven Real DB E2E)', () => {
       }
 
       expect(uncovered).toEqual([]);
+    });
+
+    it('asserts every registered express route (non-allowlisted) is documented in OpenAPI document', () => {
+      const registeredRoutes = extractRegisteredRoutes(app);
+      const swaggerConfig = new DocumentBuilder().setTitle('Intraflow API').build();
+      const document = SwaggerModule.createDocument(app, swaggerConfig);
+
+      const openApiRoutes = new Set<string>();
+      for (const [pathKey, pathItem] of Object.entries(document.paths)) {
+        // Convert OpenAPI format /users/{userId} to Express format /users/:userId
+        const expressPath = pathKey.replace(/\{([^}]+)\}/g, ':$1');
+        const methods = Object.keys(pathItem as object);
+        for (const m of methods) {
+          openApiRoutes.add(`${m.toUpperCase()} ${expressPath}`);
+        }
+      }
+
+      const openApiAllowlist = new Set<string>([
+        'GET /health',
+      ]);
+
+      const missingFromOpenApi: string[] = [];
+      for (const r of registeredRoutes) {
+        const key = `${r.method} ${r.path}`;
+        if (!openApiRoutes.has(key) && !openApiAllowlist.has(key)) {
+          missingFromOpenApi.push(key);
+        }
+      }
+
+      expect(missingFromOpenApi).toEqual([]);
     });
   });
 

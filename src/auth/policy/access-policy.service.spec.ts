@@ -293,6 +293,7 @@ describe('AccessPolicyService', () => {
       expect(policyService.canReviewTask(memberA, taskInProjectA)).toBe(false);
       expect(policyService.canReviewTask(moderatorB, taskInProjectA)).toBe(false);
       expect(policyService.canReviewTask(employeeNoTeam, taskInProjectA)).toBe(false);
+      expect(policyService.canReviewTask(moderatorA, standaloneTask)).toBe(false);
     });
   });
 
@@ -309,6 +310,49 @@ describe('AccessPolicyService', () => {
     it('denies Team A member or other team moderator from moderating comments on Team A tasks', () => {
       expect(policyService.canModerateComments(memberA, taskInProjectA)).toBe(false);
       expect(policyService.canModerateComments(moderatorB, taskInProjectA)).toBe(false);
+      expect(policyService.canModerateComments(memberA, standaloneTask)).toBe(false);
+    });
+  });
+
+  describe('canManageAttachments', () => {
+    it('allows Admin to manage attachments on any task', () => {
+      expect(policyService.canManageAttachments(adminUser, taskInProjectA)).toBe(true);
+      expect(policyService.canManageAttachments(adminUser, standaloneTask)).toBe(true);
+    });
+
+    it('allows assignee to manage attachments', () => {
+      const assignedTask = new Task({ ...taskInProjectA, assignedTo: memberA });
+      expect(policyService.canManageAttachments(memberA, assignedTask)).toBe(true);
+    });
+
+    it('allows team moderator to manage attachments on team tasks', () => {
+      expect(policyService.canManageAttachments(moderatorA, taskInProjectA)).toBe(true);
+    });
+
+    it('denies non-assignee member on team task and non-assignee on standalone task', () => {
+      expect(policyService.canManageAttachments(memberA, taskInProjectA)).toBe(false);
+      expect(policyService.canManageAttachments(memberA, standaloneTask)).toBe(false);
+      expect(policyService.canManageAttachments(moderatorA, standaloneTask)).toBe(false);
+    });
+  });
+
+  describe('canDeleteAttachment', () => {
+    it('allows Admin to delete any attachment', () => {
+      expect(policyService.canDeleteAttachment(adminUser, { uploadedById: 99 }, taskInProjectA)).toBe(true);
+    });
+
+    it('allows uploader to delete own attachment', () => {
+      expect(policyService.canDeleteAttachment(memberA, { uploadedById: memberA.userId }, taskInProjectA)).toBe(true);
+    });
+
+    it('allows team moderator to delete attachment on team task', () => {
+      expect(policyService.canDeleteAttachment(moderatorA, { uploadedById: 99 }, taskInProjectA)).toBe(true);
+    });
+
+    it('denies non-uploader non-moderator employee', () => {
+      expect(policyService.canDeleteAttachment(memberA, { uploadedById: 99 }, taskInProjectA)).toBe(false);
+      expect(policyService.canDeleteAttachment(memberA, { uploadedById: 99 }, standaloneTask)).toBe(false);
+      expect(policyService.canDeleteAttachment(moderatorA, { uploadedById: 99 }, standaloneTask)).toBe(false);
     });
   });
 });

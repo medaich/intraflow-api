@@ -3,6 +3,7 @@ import {
   CreateDateColumn,
   DeleteDateColumn,
   Entity,
+  Index,
   JoinColumn,
   JoinTable,
   ManyToMany,
@@ -14,6 +15,7 @@ import {
 import { User } from "../../users/entities/user.entity";
 import { Comment } from "./comment.entity";
 import { Project } from "../../projects/entities/project.entity";
+import { Attachment } from "./attachment.entity";
 
 export enum TaskStatus {
   UNASSIGNED = "UNASSIGNED",
@@ -25,6 +27,19 @@ export enum TaskStatus {
   // OVERDUE - derived
 }
 
+export enum TaskPriority {
+  LOW = "LOW",
+  MEDIUM = "MEDIUM",
+  HIGH = "HIGH",
+  URGENT = "URGENT",
+}
+
+@Index("idx_tasks_status", ["status"])
+@Index("idx_tasks_dates", ["endDate", "startDate"])
+@Index("idx_tasks_priority", ["priority"])
+@Index("idx_tasks_project_status", ["projectId", "status"])
+@Index("idx_tasks_assigned_to", ["assignedTo"])
+@Index("idx_tasks_name", ["name"])
 @Entity("tasks")
 export class Task {
   constructor(task?: Partial<Task>) {
@@ -42,6 +57,9 @@ export class Task {
 
   @OneToMany(() => Comment, (Comment) => Comment.task)
   comments: Comment[] | null;
+
+  @OneToMany(() => Attachment, (attachment) => attachment.task)
+  attachments: Attachment[];
 
   @Column({ name: "project_id", type: "int", nullable: true })
   projectId: number | null;
@@ -96,6 +114,13 @@ export class Task {
     default: TaskStatus.UNASSIGNED,
   })
   status: TaskStatus;
+
+  @Column({
+    type: "enum",
+    enum: TaskPriority,
+    default: TaskPriority.MEDIUM,
+  })
+  priority: TaskPriority;
 
   @CreateDateColumn({
     type: "timestamp",

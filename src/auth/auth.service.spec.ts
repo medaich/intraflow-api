@@ -1,10 +1,15 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, UnauthorizedException } from '@nestjs/common';
+import { getRepositoryToken } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
+import { DataSource } from 'typeorm';
 import { scrypt, randomBytes } from 'crypto';
 import { promisify } from 'util';
 import { AuthService } from './auth.service';
 import { UsersService } from '../users/users.service';
 import { User, UserRole } from '../users/entities/user.entity';
+import { PasswordResetToken } from './entities/password-reset-token.entity';
+import { MailService } from '../mail/mail.service';
 
 const scryptAsync = promisify(scrypt);
 
@@ -24,6 +29,32 @@ describe('AuthService (Hashing, Verification & Edge Cases)', () => {
         {
           provide: UsersService,
           useValue: usersService,
+        },
+        {
+          provide: getRepositoryToken(PasswordResetToken),
+          useValue: {
+            findOne: jest.fn(),
+            save: jest.fn(),
+            update: jest.fn(),
+          },
+        },
+        {
+          provide: MailService,
+          useValue: {
+            sendPasswordReset: jest.fn(),
+          },
+        },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: jest.fn().mockReturnValue(3600),
+          },
+        },
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: jest.fn(),
+          },
         },
       ],
     }).compile();
@@ -107,6 +138,84 @@ describe('AuthService (Hashing, Verification & Edge Cases)', () => {
         'AttemptPassword123!',
         expect.stringContaining('v2.0123456789abcdef0123456789abcdef'),
       );
+    });
+  });
+
+  describe('forgotPassword', () => {
+    it('returns uniform message without sending email when user not found', async () => {
+      usersService.findByEmailWithPassword!.mockResolvedValue(null);
+      const mailService = (authService as unknown as { mailService: MailService }).mailService;
+      const sendSpy = jest.spyOn(mailService, 'sendPasswordReset');
+
+      const result = await authService.forgotPassword('unknown@intraflow.dev');
+      expect(result.message).toContain('If that email address is in our database');
+      expect(sendSpy).not.toHaveBeenCalled();
+    });
+
+    it('creates token and sends reset email when user exists', async () => {
+      usersService.findByEmailWithPassword!.mockResolvedValue(
+        new User({ userId: 10, email: 'exists@intraflow.dev' }),
+      );
+      const mailService = (authService as unknown as { mailService: MailService }).mailService;
+      const sendSpy = jest.spyOn(mailService, 'sendPasswordReset').mockResolvedValue();
+
+      const result = await authService.forgotPassword('EXISTS@intraflow.dev ');
+      expect(result.message).toContain('If that email address is in our database');
+      expect(sendSpy).toHaveBeenCalledWith('exists@intraflow.dev', expect.any(String));
+    });
+  });
+
+  describe('resetPassword', () => {
+    it('throws BadRequestException for invalid or expired token', async () => {
+      const dataSource = (authService as unknown as { dataSource: DataSource }).dataSource;
+      jest.spyOn(dataSource, 'transaction').mockImplementation((cb) => {
+        const mockManager = {
+          getRepository: jest.fn().mockReturnValue({
+            findOne: jest.fn().mockResolvedValue(null),
+          }),
+        };
+        return cb(mockManager as never);
+      });
+
+      await expect(
+        authService.resetPassword({ token: 'badtoken', password: 'NewPassword123!' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('successfully resets password and updates sessionsValidFrom', async () => {
+      const dataSource = (authService as unknown as { dataSource: DataSource }).dataSource;
+      const mockUser = new User({ userId: 5, email: 'test@intraflow.dev' });
+      const mockToken = {
+        userId: 5,
+        usedAt: null,
+        expiresAt: new Date(Date.now() + 60000),
+      };
+
+      jest.spyOn(dataSource, 'transaction').mockImplementation((cb) => {
+        const mockManager = {
+          getRepository: jest.fn().mockImplementation((entity) => {
+            if (entity === PasswordResetToken) {
+              return {
+                findOne: jest.fn().mockResolvedValue(mockToken),
+                save: jest.fn().mockResolvedValue(mockToken),
+              };
+            }
+            return {
+              findOne: jest.fn().mockResolvedValue(mockUser),
+              save: jest.fn().mockResolvedValue(mockUser),
+            };
+          }),
+        };
+        return cb(mockManager as never);
+      });
+
+      const res = await authService.resetPassword({
+        token: 'validtoken',
+        password: 'FreshPassword123!',
+      });
+      expect(res.message).toContain('Password has been reset');
+      expect(mockToken.usedAt).toBeDefined();
+      expect(mockUser.sessionsValidFrom).toBeDefined();
     });
   });
 });

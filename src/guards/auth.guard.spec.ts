@@ -1,4 +1,5 @@
 import { ExecutionContext, ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { AuthGuard } from './auth.guard';
 import { AdminGuard } from './admin-auth.guard';
 import { UsersService } from '../users/users.service';
@@ -6,16 +7,20 @@ import { User, UserRole } from '../users/entities/user.entity';
 
 describe('AuthGuard and AdminGuard (Session Handling & Single Hydration)', () => {
   let mockUsersService: jest.Mocked<Partial<UsersService>>;
+  let mockReflector: jest.Mocked<Partial<Reflector>>;
 
   beforeEach(() => {
     mockUsersService = {
       findByIdForAuth: jest.fn(),
     };
+    mockReflector = {
+      getAllAndOverride: jest.fn().mockReturnValue(false),
+    };
   });
 
   describe('AuthGuard Session Edge Cases', () => {
     it('throws 401 when request.session is undefined (original crash reproduction)', async () => {
-      const guard = new AuthGuard(mockUsersService as UsersService);
+      const guard = new AuthGuard(mockUsersService as UsersService, mockReflector as Reflector);
       const context = {
         switchToHttp: () => ({
           getRequest: () => ({}),
@@ -26,7 +31,7 @@ describe('AuthGuard and AdminGuard (Session Handling & Single Hydration)', () =>
     });
 
     it('throws 401 when request.session is empty object', async () => {
-      const guard = new AuthGuard(mockUsersService as UsersService);
+      const guard = new AuthGuard(mockUsersService as UsersService, mockReflector as Reflector);
       const context = {
         switchToHttp: () => ({
           getRequest: () => ({ session: {} }),
@@ -36,9 +41,61 @@ describe('AuthGuard and AdminGuard (Session Handling & Single Hydration)', () =>
       await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
     });
 
-    it('throws 401 when user in session has been soft-deleted or does not exist in DB', async () => {
-      const guard = new AuthGuard(mockUsersService as UsersService);
+    it('throws 401 when session has userId but lacks iat (forced re-login)', async () => {
+      const guard = new AuthGuard(mockUsersService as UsersService, mockReflector as Reflector);
       const req: Record<string, unknown> = { session: { userId: 99 } };
+      const context = {
+        switchToHttp: () => ({
+          getRequest: () => req,
+        }),
+      } as unknown as ExecutionContext;
+
+      await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
+      expect(req.session).toBeNull();
+    });
+
+    it('throws 401 when session iat is before user sessionsValidFrom', async () => {
+      const guard = new AuthGuard(mockUsersService as UsersService, mockReflector as Reflector);
+      const req: Record<string, unknown> = {
+        session: { userId: 99, iat: 1000 },
+      };
+      const context = {
+        switchToHttp: () => ({
+          getRequest: () => req,
+        }),
+      } as unknown as ExecutionContext;
+
+      mockUsersService.findByIdForAuth!.mockResolvedValue(
+        new User({ userId: 99, sessionsValidFrom: new Date(2000) }),
+      );
+
+      await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
+      expect(req.session).toBeNull();
+    });
+
+    it('allows access when session iat is after user sessionsValidFrom', async () => {
+      const guard = new AuthGuard(mockUsersService as UsersService, mockReflector as Reflector);
+      const req: Record<string, unknown> = {
+        session: { userId: 99, iat: 3000 },
+      };
+      const context = {
+        switchToHttp: () => ({
+          getRequest: () => req,
+        }),
+      } as unknown as ExecutionContext;
+
+      mockUsersService.findByIdForAuth!.mockResolvedValue(
+        new User({ userId: 99, sessionsValidFrom: new Date(2000) }),
+      );
+
+      const result = await guard.canActivate(context);
+      expect(result).toBe(true);
+      expect(req.currentUser).toBeDefined();
+    });
+
+    it('throws 401 when user in session has been soft-deleted or does not exist in DB', async () => {
+      const guard = new AuthGuard(mockUsersService as UsersService, mockReflector as Reflector);
+      const req: Record<string, unknown> = { session: { userId: 99, iat: Date.now() } };
       const context = {
         switchToHttp: () => ({
           getRequest: () => req,
@@ -121,7 +178,7 @@ describe('AuthGuard and AdminGuard (Session Handling & Single Hydration)', () =>
       mockUsersService.findByIdForAuth!.mockResolvedValue(dbUser);
 
       const requestObj: Record<string, unknown> = {
-        session: { userId: 10 },
+        session: { userId: 10, iat: Date.now() },
       };
       const context = {
         switchToHttp: () => ({
@@ -129,7 +186,7 @@ describe('AuthGuard and AdminGuard (Session Handling & Single Hydration)', () =>
         }),
       } as unknown as ExecutionContext;
 
-      const authGuard = new AuthGuard(mockUsersService as UsersService);
+      const authGuard = new AuthGuard(mockUsersService as UsersService, mockReflector as Reflector);
 
       // 1. AuthGuard activates
       const authResult = await authGuard.canActivate(context);
@@ -149,7 +206,7 @@ describe('AuthGuard and AdminGuard (Session Handling & Single Hydration)', () =>
       mockUsersService.findByIdForAuth!.mockResolvedValue(dbUser);
 
       const requestObj: Record<string, unknown> = {
-        session: { userId: 10 },
+        session: { userId: 10, iat: Date.now() },
       };
       const context = {
         switchToHttp: () => ({
@@ -157,7 +214,7 @@ describe('AuthGuard and AdminGuard (Session Handling & Single Hydration)', () =>
         }),
       } as unknown as ExecutionContext;
 
-      const authGuard = new AuthGuard(mockUsersService as UsersService);
+      const authGuard = new AuthGuard(mockUsersService as UsersService, mockReflector as Reflector);
       const adminGuard = new AdminGuard(mockUsersService as UsersService);
 
       // 1. AuthGuard activates first

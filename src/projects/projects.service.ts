@@ -15,7 +15,12 @@ import { AccessPolicyService } from '../auth/policy/access-policy.service';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
 import { SetProjectTeamDto } from './dto/set-project-team.dto';
+import { ProjectQueryDto } from './dto/project-query.dto';
 import { calculateProjectProgress, checkProjectIsOverdue } from './project-progress';
+import { PaginatedResponseDto } from '../common/dto/paginated-response.dto';
+import { parseSort } from '../common/utils/sort-parser';
+import { escapeLikeString } from '../common/utils/search-escaper';
+import { ClockService } from '../common/clock/clock.service';
 
 @Injectable()
 export class ProjectsService {
@@ -27,6 +32,7 @@ export class ProjectsService {
     @InjectRepository(Task)
     private readonly taskRepo: Repository<Task>,
     private readonly policyService: AccessPolicyService,
+    private readonly clockService: ClockService,
   ) {}
 
   async create(dto: CreateProjectDto, creator: User): Promise<Project> {
@@ -51,28 +57,60 @@ export class ProjectsService {
     return this.enrichProject(saved);
   }
 
-  async findAll(caller: User): Promise<Project[]> {
-    let projects: Project[];
+  async findAll(
+    query: ProjectQueryDto = new ProjectQueryDto(),
+    caller: User,
+  ): Promise<PaginatedResponseDto<Project>> {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
 
-    if (caller.role === UserRole.ADMIN) {
-      projects = await this.projectRepo.find({
-        relations: ['team'],
-        order: { projectId: 'ASC' },
-      });
-    } else {
-      const teamId = caller.membership?.teamId;
-      if (!teamId) {
-        return [];
+    const qb = this.projectRepo
+      .createQueryBuilder('project')
+      .leftJoinAndSelect('project.team', 'team');
+
+    if (caller.role !== UserRole.ADMIN) {
+      const userTeamId = caller.membership?.teamId;
+      if (!userTeamId) {
+        return new PaginatedResponseDto([], 0, page, limit);
       }
-      projects = await this.projectRepo.find({
-        where: { teamId },
-        relations: ['team'],
-        order: { projectId: 'ASC' },
-      });
+      qb.andWhere('project.teamId = :userTeamId', { userTeamId });
     }
 
+    if (query.teamId) {
+      qb.andWhere('project.teamId = :filterTeamId', { filterTeamId: query.teamId });
+    }
+
+    if (query.status) {
+      qb.andWhere('project.status = :status', { status: query.status });
+    }
+
+    if (query.search) {
+      const escaped = `%${escapeLikeString(query.search)}%`;
+      qb.andWhere("project.name LIKE :search ESCAPE '\\\\'", { search: escaped });
+    }
+
+    const sort = parseSort(query.sort, ['name', 'endDate', 'createdAt']);
+    if (sort) {
+      const column =
+        sort.field === 'name'
+          ? 'project.name'
+          : sort.field === 'endDate'
+            ? 'project.endDate'
+            : 'project.createdAt';
+      qb.orderBy(column, sort.direction);
+      qb.addOrderBy('project.projectId', 'ASC');
+    } else {
+      qb.orderBy('project.projectId', 'ASC');
+    }
+
+    const total = await qb.getCount();
+    const projects = await qb
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getMany();
+
     if (projects.length === 0) {
-      return [];
+      return new PaginatedResponseDto([], total, page, limit);
     }
 
     const projectIds = projects.map((p) => p.projectId);
@@ -86,6 +124,7 @@ export class ProjectsService {
           'completed',
         )
         .where('task.projectId IN (:...projectIds)', { projectIds })
+        .andWhere('task.deletedAt IS NULL')
         .groupBy('task.projectId')
         .getRawMany();
 
@@ -97,18 +136,20 @@ export class ProjectsService {
       });
     }
 
-    return projects.map((p) =>
+    const enriched = projects.map((p) =>
       this.enrichProject(
         p,
         countsMap.get(p.projectId) ?? { total: 0, completed: 0 },
       ),
     );
+
+    return new PaginatedResponseDto(enriched, total, page, limit);
   }
 
   async findOne(projectId: number, caller: User): Promise<Project> {
     const project = await this.projectRepo.findOne({
       where: { projectId },
-      relations: ['tasks', 'team'],
+      relations: ['team'],
     });
 
     if (!project) {
@@ -119,7 +160,23 @@ export class ProjectsService {
       throw new NotFoundException(`Project with id ${projectId} not found`);
     }
 
-    return this.enrichProject(project);
+    const rawCounts = await this.taskRepo
+      .createQueryBuilder('task')
+      .select('COUNT(task.taskId)', 'total')
+      .addSelect(
+        `SUM(CASE WHEN task.status = '${TaskStatus.COMPLETED}' THEN 1 ELSE 0 END)`,
+        'completed',
+      )
+      .where('task.projectId = :projectId', { projectId })
+      .andWhere('task.deletedAt IS NULL')
+      .getRawOne<{ total: string; completed: string }>();
+
+    const aggregateCounts = {
+      total: Number(rawCounts?.total || 0),
+      completed: Number(rawCounts?.completed || 0),
+    };
+
+    return this.enrichProject(project, aggregateCounts);
   }
 
   async update(projectId: number, dto: UpdateProjectDto, caller: User): Promise<Project> {
@@ -146,15 +203,11 @@ export class ProjectsService {
         throw new ForbiddenException('Only team moderators or administrators can update projects');
       }
 
-      // Moderator may ONLY set status to COMPLETED
-      const hasOtherFields =
-        dto.name !== undefined ||
-        dto.description !== undefined ||
-        dto.startDate !== undefined ||
-        dto.endDate !== undefined ||
-        (dto.status !== undefined && dto.status !== ProjectStatus.COMPLETED);
+      if (dto.name !== undefined) {
+        throw new ForbiddenException('Moderators cannot change project name');
+      }
 
-      if (hasOtherFields) {
+      if (dto.status !== undefined && dto.status !== ProjectStatus.COMPLETED) {
         throw new ForbiddenException('Moderators can only mark project status as COMPLETED');
       }
     }
@@ -178,12 +231,10 @@ export class ProjectsService {
       project.status = dto.status;
     }
 
-    if (isCallerAdmin) {
-      if (dto.name !== undefined) project.name = dto.name;
-      if (dto.description !== undefined) project.description = dto.description ?? null;
-      if (dto.startDate !== undefined) project.startDate = dto.startDate ?? null;
-      if (dto.endDate !== undefined) project.endDate = dto.endDate ?? null;
-    }
+    if (dto.name !== undefined && isCallerAdmin) project.name = dto.name;
+    if (dto.description !== undefined) project.description = dto.description ?? null;
+    if (dto.startDate !== undefined) project.startDate = dto.startDate ?? null;
+    if (dto.endDate !== undefined) project.endDate = dto.endDate ?? null;
 
     const saved = await this.projectRepo.save(project);
     return this.enrichProject(saved);
@@ -261,7 +312,11 @@ export class ProjectsService {
                 ),
         }
       : calculateProjectProgress(project.tasks ?? []);
-    const isOverdue = checkProjectIsOverdue(project.endDate, project.status);
+    const isOverdue = checkProjectIsOverdue(
+      project.endDate,
+      project.status,
+      this.clockService.now(),
+    );
 
     return Object.assign(project, { progress, isOverdue });
   }

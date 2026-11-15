@@ -9,12 +9,21 @@ import { ConfigModule } from "@nestjs/config";
 import { Invited } from "./entities/invited.entity";
 import { Team } from "../teams/entities/team.entity";
 import { TeamMembership } from "../teams/entities/team-membership.entity";
+import { EmailChangeRequest } from "./entities/email-change-request.entity";
 import { AuthGuard } from "../guards/auth.guard";
 import { AdminGuard } from "../guards/admin-auth.guard";
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([User, Task, Comment, Invited, Team, TeamMembership]),
+    TypeOrmModule.forFeature([
+      User,
+      Task,
+      Comment,
+      Invited,
+      Team,
+      TeamMembership,
+      EmailChangeRequest,
+    ]),
     ConfigModule,
   ],
   controllers: [UsersController],
@@ -26,3 +35,4 @@ import { AdminGuard } from "../guards/admin-auth.guard";
   exports: [UsersService, AuthGuard, AdminGuard, TypeOrmModule],
 })
 export class UsersModule {}
+

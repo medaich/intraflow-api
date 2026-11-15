@@ -170,4 +170,64 @@ export class AccessPolicyService {
       user.membership?.role === TeamMemberRole.MODERATOR
     );
   }
+
+  /**
+   * Attachment management (upload, list, download):
+   * - Admin: full access.
+   * - Moderator of the project team: allowed for project tasks.
+   * - Assignee of the task: allowed.
+   * - Standalone tasks: Admin and assignee only.
+   * - Everyone else -> false.
+   */
+  canManageAttachments(user: User, task: Task): boolean {
+    if (user.role === UserRole.ADMIN) {
+      return true;
+    }
+
+    if (task.assignedTo && task.assignedTo.userId === user.userId) {
+      return true;
+    }
+
+    const taskTeamId = task.project?.teamId ?? null;
+    if (taskTeamId) {
+      return (
+        user.membership?.teamId === taskTeamId &&
+        user.membership?.role === TeamMemberRole.MODERATOR
+      );
+    }
+
+    return false;
+  }
+
+  /**
+   * Attachment deletion:
+   * - Uploader: allowed.
+   * - Admin: full access.
+   * - Moderator of the project team: allowed.
+   * - Everyone else -> false.
+   */
+  canDeleteAttachment(
+    user: User,
+    attachment: { uploadedById?: number | null },
+    task: Task,
+  ): boolean {
+    if (user.role === UserRole.ADMIN) {
+      return true;
+    }
+
+    if (attachment.uploadedById && attachment.uploadedById === user.userId) {
+      return true;
+    }
+
+    const taskTeamId = task.project?.teamId ?? null;
+    if (taskTeamId) {
+      return (
+        user.membership?.teamId === taskTeamId &&
+        user.membership?.role === TeamMemberRole.MODERATOR
+      );
+    }
+
+    return false;
+  }
 }
+

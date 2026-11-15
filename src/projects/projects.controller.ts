@@ -10,6 +10,7 @@ import {
   Patch,
   Post,
   Put,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiCookieAuth } from '@nestjs/swagger';
@@ -23,6 +24,9 @@ import { CreateProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
 import { SetProjectTeamDto } from './dto/set-project-team.dto';
 import { ProjectResponseDto } from './dto/project-response.dto';
+import { ProjectQueryDto } from './dto/project-query.dto';
+import { ProjectTaskQueryDto } from '../tasks/dto/task-query.dto';
+import { PaginatedResponseDto } from '../common/dto/paginated-response.dto';
 import { CreateTaskDto } from '../tasks/dto/create-task.dto';
 import { TaskResponseDto } from '../tasks/dto/task-response.dto';
 import { TasksService } from '../tasks/tasks.service';
@@ -52,14 +56,23 @@ export class ProjectsController {
   }
 
   @ApiOperation({ summary: 'List visible projects with derived progress and overdue status' })
-  @ApiResponse({ status: 200, description: 'List of projects', type: [ProjectResponseDto] })
+  @ApiResponse({ status: 200, description: 'Paginated list of projects' })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   @Get()
   @UseGuards(AuthGuard)
-  async findAll(@CurrentUser() user: User): Promise<ProjectResponseDto[]> {
-    const projects = await this.projectsService.findAll(user);
-    return projects.map((p) =>
+  async findAll(
+    @Query() query: ProjectQueryDto,
+    @CurrentUser() user: User,
+  ): Promise<PaginatedResponseDto<ProjectResponseDto>> {
+    const result = await this.projectsService.findAll(query, user);
+    const serialized = result.data.map((p) =>
       plainToInstance(ProjectResponseDto, p, { excludeExtraneousValues: true }),
+    );
+    return new PaginatedResponseDto(
+      serialized,
+      result.meta.total,
+      result.meta.page,
+      result.meta.limit,
     );
   }
 
@@ -144,18 +157,25 @@ export class ProjectsController {
   }
 
   @ApiOperation({ summary: 'List all tasks in a project' })
-  @ApiResponse({ status: 200, description: 'List of project tasks', type: [TaskResponseDto] })
+  @ApiResponse({ status: 200, description: 'Paginated list of project tasks' })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   @ApiResponse({ status: 404, description: 'Project not found' })
   @Get(':projectId/tasks')
   @UseGuards(AuthGuard)
   async getProjectTasks(
     @Param('projectId', ParseIntPipe) projectId: number,
+    @Query() query: ProjectTaskQueryDto,
     @CurrentUser() user: User,
-  ): Promise<TaskResponseDto[]> {
-    const tasks = await this.tasksService.findProjectTasks(projectId, user);
-    return tasks.map((t) =>
+  ): Promise<PaginatedResponseDto<TaskResponseDto>> {
+    const result = await this.tasksService.findProjectTasks(projectId, query, user);
+    const serialized = result.data.map((t) =>
       plainToInstance(TaskResponseDto, t, { excludeExtraneousValues: true }),
+    );
+    return new PaginatedResponseDto(
+      serialized,
+      result.meta.total,
+      result.meta.page,
+      result.meta.limit,
     );
   }
 }

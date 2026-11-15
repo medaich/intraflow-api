@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, Repository } from 'typeorm';
+import { EntityManager, In, Repository } from 'typeorm';
 import { Team } from './entities/team.entity';
 import { TeamMembership, TeamMemberRole } from './entities/team-membership.entity';
 import { User, UserRole } from '../users/entities/user.entity';
@@ -18,6 +18,10 @@ import { CreateTeamDto } from './dto/create-team.dto';
 import { UpdateTeamDto } from './dto/update-team.dto';
 import { AddMemberDto } from './dto/add-member.dto';
 import { UpdateMemberDto } from './dto/update-member.dto';
+import { TeamQueryDto } from './dto/team-query.dto';
+import { PaginatedResponseDto } from '../common/dto/paginated-response.dto';
+import { parseSort } from '../common/utils/sort-parser';
+import { escapeLikeString } from '../common/utils/search-escaper';
 
 @Injectable()
 export class TeamsService {
@@ -54,11 +58,48 @@ export class TeamsService {
     return this.teamRepo.save(team);
   }
 
-  async findAll(): Promise<Team[]> {
-    return this.teamRepo.find({
-      relations: ['members', 'members.user'],
-      order: { teamId: 'ASC' },
-    });
+  async findAll(query: TeamQueryDto = new TeamQueryDto()): Promise<PaginatedResponseDto<Team>> {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+
+    const qb = this.teamRepo.createQueryBuilder('team');
+
+    if (query.search) {
+      const escaped = `%${escapeLikeString(query.search)}%`;
+      qb.andWhere("team.name LIKE :search ESCAPE '\\\\'", { search: escaped });
+    }
+
+    const sort = parseSort(query.sort, ['name', 'createdAt']);
+    if (sort) {
+      const column = sort.field === 'name' ? 'team.name' : 'team.createdAt';
+      qb.orderBy(column, sort.direction);
+      qb.addOrderBy('team.teamId', 'ASC');
+    } else {
+      qb.orderBy('team.teamId', 'ASC');
+    }
+
+    const total = await qb.getCount();
+    const teams = await qb
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getMany();
+
+    if (teams.length > 0) {
+      const teamIds = teams.map((t) => t.teamId);
+      const teamsWithMembers = await this.teamRepo.find({
+        where: { teamId: In(teamIds) },
+        relations: ['members', 'members.user'],
+      });
+      const memberMap = new Map<number, TeamMembership[]>();
+      for (const tm of teamsWithMembers) {
+        memberMap.set(tm.teamId, tm.members ?? []);
+      }
+      for (const t of teams) {
+        t.members = memberMap.get(t.teamId) ?? [];
+      }
+    }
+
+    return new PaginatedResponseDto(teams, total, page, limit);
   }
 
   async findOne(teamId: number, caller: User): Promise<Team> {

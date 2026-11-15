@@ -8,6 +8,7 @@ import { User, UserRole } from '../src/users/entities/user.entity';
 import { Team } from '../src/teams/entities/team.entity';
 import { TeamMembership, TeamMemberRole } from '../src/teams/entities/team-membership.entity';
 import { Project } from '../src/projects/entities/project.entity';
+import { Invited } from '../src/users/entities/invited.entity';
 import { AuthService } from '../src/auth/auth.service';
 
 describe('Teams & Membership E2E Tests (Real DB intraflow_test)', () => {
@@ -17,6 +18,7 @@ describe('Teams & Membership E2E Tests (Real DB intraflow_test)', () => {
   let teamRepo: Repository<Team>;
   let membershipRepo: Repository<TeamMembership>;
   let projectRepo: Repository<Project>;
+  let invitedRepo: Repository<Invited>;
   let authService: AuthService;
 
   let adminCookies: string[];
@@ -30,6 +32,7 @@ describe('Teams & Membership E2E Tests (Real DB intraflow_test)', () => {
     teamRepo = bundle.moduleFixture.get(getRepositoryToken(Team));
     membershipRepo = bundle.moduleFixture.get(getRepositoryToken(TeamMembership));
     projectRepo = bundle.moduleFixture.get(getRepositoryToken(Project));
+    invitedRepo = bundle.moduleFixture.get(getRepositoryToken(Invited));
     authService = bundle.moduleFixture.get(AuthService);
 
     const admin = await createAndSignInUser(app, userRepo, authService, 'admin@intraflow.dev', UserRole.ADMIN, 'Admin');
@@ -77,14 +80,14 @@ describe('Teams & Membership E2E Tests (Real DB intraflow_test)', () => {
       expect(res.status).toBe(403);
     });
 
-    it('Admin lists all teams (plain array)', async () => {
+    it('Admin lists all teams (paginated envelope)', async () => {
       const res = await request(app.getHttpServer())
         .get('/teams')
         .set('Cookie', adminCookies);
 
       expect(res.status).toBe(200);
-      expect(Array.isArray(res.body)).toBe(true);
-      expect(res.body.some((t: any) => t.teamId === createdTeamId)).toBe(true);
+      expect(Array.isArray(res.body.data)).toBe(true);
+      expect(res.body.data.some((t: any) => t.teamId === createdTeamId)).toBe(true);
     });
 
     it('Caller with no team calling GET /teams/my-team returns 404', async () => {
@@ -341,7 +344,8 @@ describe('Teams & Membership E2E Tests (Real DB intraflow_test)', () => {
         .send({ email: 'team.signup@intraflow.dev', teamId: inviteTeam.teamId });
 
       expect(inviteRes.status).toBe(201);
-      const token = inviteRes.body.token;
+      const inviteRecord = await invitedRepo.findOneBy({ email: 'team.signup@intraflow.dev' });
+      const token = inviteRecord?.token;
 
       // Signup with the token
       const signupRes = await request(app.getHttpServer())

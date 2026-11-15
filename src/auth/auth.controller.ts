@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   HttpCode,
+  HttpStatus,
   ParseUUIDPipe,
   Post,
   Query,
@@ -12,11 +13,13 @@ import {
 import { Request } from "express";
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from "@nestjs/swagger";
 import { Throttle } from "@nestjs/throttler";
-import { SessionData } from "src/common/types/session.interface";
-import { AuthGuard } from "src/guards/auth.guard";
+import { SessionData } from "../common/types/session.interface";
+import { AuthGuard } from "../guards/auth.guard";
 import { AuthService } from "./auth.service";
 import { SigninDto } from "./dto/signin.dto";
 import { SignupDto } from "./dto/signup.dto";
+import { ForgotPasswordDto } from "./dto/forgot-password.dto";
+import { ResetPasswordDto } from "./dto/reset-password.dto";
 
 interface RequestWithSession extends Request {
   session: SessionData | null;
@@ -42,6 +45,7 @@ export class AuthController {
     const user = await this.authService.signup(token, signupDto);
     session.userId = user.userId;
     session.role = user.role;
+    session.iat = Date.now();
 
     return {
       userId: user.userId,
@@ -60,6 +64,7 @@ export class AuthController {
     const user = await this.authService.signin(signinDto);
     session.userId = user.userId;
     session.role = user.role;
+    session.iat = Date.now();
 
     return {
       userId: user.userId,
@@ -67,6 +72,25 @@ export class AuthController {
       email: user.email,
       role: user.role,
     };
+  }
+
+  @ApiOperation({ summary: "Request password reset email" })
+  @ApiResponse({ status: 202, description: "Password reset request accepted" })
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @Post("forgot-password")
+  @HttpCode(HttpStatus.ACCEPTED)
+  async forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.authService.forgotPassword(dto.email);
+  }
+
+  @ApiOperation({ summary: "Reset password using reset token" })
+  @ApiResponse({ status: 200, description: "Password successfully reset" })
+  @ApiResponse({ status: 400, description: "Invalid or expired token" })
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @Post("reset-password")
+  @HttpCode(HttpStatus.OK)
+  async resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto);
   }
 
   @ApiOperation({ summary: "Sign out and invalidate session cookie" })
@@ -78,3 +102,4 @@ export class AuthController {
     req.session = null;
   }
 }
+

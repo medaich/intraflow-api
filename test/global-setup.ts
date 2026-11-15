@@ -4,6 +4,7 @@ import mysql from 'mysql2/promise';
 import { DataSource } from 'typeorm';
 import { InitialSchema1731510000000 } from '../src/database/migrations/1731510000000-InitialSchema';
 import { Phase3Schema1731520000000 } from '../src/database/migrations/1731520000000-Phase3Schema';
+import { Phase4Schema1731530000000 } from '../src/database/migrations/1731530000000-Phase4Schema';
 import { validateTestDatabaseName } from '../src/database/test-db-safety';
 
 export default async function globalSetup() {
@@ -32,7 +33,11 @@ export default async function globalSetup() {
     username: user,
     password,
     database: testDbName,
-    migrations: [InitialSchema1731510000000, Phase3Schema1731520000000],
+    migrations: [
+      InitialSchema1731510000000,
+      Phase3Schema1731520000000,
+      Phase4Schema1731530000000,
+    ],
     synchronize: false,
   });
 

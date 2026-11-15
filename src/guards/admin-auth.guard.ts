@@ -6,8 +6,8 @@ import {
   Optional,
   UnauthorizedException,
 } from "@nestjs/common";
-import { UserRole } from "src/users/entities/user.entity";
-import { UsersService } from "src/users/users.service";
+import { UserRole } from "../users/entities/user.entity";
+import { UsersService } from "../users/users.service";
 import { RequestWithSessionAndUser } from "./auth.guard";
 
 @Injectable()

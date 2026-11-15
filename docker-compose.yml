@@ -1,0 +1,76 @@
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-secret}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-intraflow}
+    ports:
+      - "3308:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-secret}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: intraflow-mailpit
+    restart: unless-stopped
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+  migrate:
+    image: intraflow-api-api:latest
+    command: ["node", "./node_modules/typeorm/cli.js", "migration:run", "-d", "dist/database/data-source.js"]
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-intraflow}
+      MYSQL_USERNAME: ${MYSQL_USERNAME:-root}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-secret}
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  api:
+    image: intraflow-api-api:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-intraflow}
+      MYSQL_USERNAME: ${MYSQL_USERNAME:-root}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-secret}
+      MAIL_TRANSPORT: smtp
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      STORAGE_DIR: /app/storage
+    ports:
+      - "3000:3000"
+    volumes:
+      - storage_data:/app/storage
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  mysql_data:
+  storage_data:

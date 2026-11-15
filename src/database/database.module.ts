@@ -12,6 +12,7 @@ export const databaseConfigFactory = (configService: ConfigService): TypeOrmModu
   database: configService.getOrThrow<string>("MYSQL_DATABASE"),
   username: configService.getOrThrow<string>("MYSQL_USERNAME"),
   password: configService.getOrThrow<string>("MYSQL_ROOT_PASSWORD"),
+  timezone: "Z",
   autoLoadEntities: true,
   synchronize: false,
 });

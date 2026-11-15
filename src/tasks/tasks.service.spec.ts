@@ -1,17 +1,25 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   NotFoundException,
+  PayloadTooLargeException,
 } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
-import { getRepositoryToken } from '@nestjs/typeorm';
+import { getDataSourceToken, getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { TasksService } from './tasks.service';
-import { Task, TaskStatus } from './entities/task.entity';
-import { User } from '../users/entities/user.entity';
+import { Task, TaskPriority, TaskStatus } from './entities/task.entity';
+import { User, UserRole } from '../users/entities/user.entity';
 import { Comment } from './entities/comment.entity';
-import { Project } from '../projects/entities/project.entity';
+import { Project, ProjectStatus } from '../projects/entities/project.entity';
+import { Attachment } from './entities/attachment.entity';
 import { AccessPolicyService } from '../auth/policy/access-policy.service';
+import { ClockService } from '../common/clock/clock.service';
+import { StorageService } from '../storage/storage.service';
+import { MailService } from '../mail/mail.service';
+import { ConfigService } from '@nestjs/config';
+import { Readable } from 'stream';
 
 describe('TasksService (Persistence, Lifecycle, State Machine & Authorization)', () => {
   let tasksService: TasksService;
@@ -19,6 +27,8 @@ describe('TasksService (Persistence, Lifecycle, State Machine & Authorization)',
   let usersRepo: jest.Mocked<Partial<Repository<User>>>;
   let commentRepo: jest.Mocked<Partial<Repository<Comment>>>;
   let projectRepo: jest.Mocked<Partial<Repository<Project>>>;
+  let attachmentRepo: jest.Mocked<Partial<Repository<Attachment>>>;
+  let storageService: jest.Mocked<Partial<StorageService>>;
 
   beforeEach(async () => {
     projectRepo = {
@@ -31,6 +41,8 @@ describe('TasksService (Persistence, Lifecycle, State Machine & Authorization)',
       findOneBy: jest.fn(),
       find: jest.fn(),
       softDelete: jest.fn().mockResolvedValue({ raw: [], affected: 1 }),
+      createQueryBuilder: jest.fn(),
+      create: jest.fn((dto) => dto as Task),
     };
 
     usersRepo = {
@@ -45,14 +57,79 @@ describe('TasksService (Persistence, Lifecycle, State Machine & Authorization)',
       softDelete: jest.fn().mockResolvedValue({ raw: [], affected: 1 }),
     };
 
+    attachmentRepo = {
+      find: jest.fn(),
+      findOne: jest.fn(),
+      create: jest.fn((dto) => dto as Attachment),
+      save: jest.fn((a) => Promise.resolve({ ...(a as Attachment), attachmentId: 1 })),
+      count: jest.fn().mockResolvedValue(0),
+      delete: jest.fn(),
+    };
+
+    storageService = {
+      put: jest.fn().mockResolvedValue(undefined),
+      getStream: jest.fn().mockResolvedValue(Readable.from(['sample data'])),
+      delete: jest.fn().mockResolvedValue(undefined),
+      exists: jest.fn().mockResolvedValue(true),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         TasksService,
         AccessPolicyService,
+        ClockService,
         { provide: getRepositoryToken(Task), useValue: tasksRepo },
         { provide: getRepositoryToken(User), useValue: usersRepo },
         { provide: getRepositoryToken(Comment), useValue: commentRepo },
         { provide: getRepositoryToken(Project), useValue: projectRepo },
+        { provide: getRepositoryToken(Attachment), useValue: attachmentRepo },
+        { provide: StorageService, useValue: storageService },
+        {
+          provide: MailService,
+          useValue: {
+            sendTaskAssigned: jest.fn(),
+          },
+        },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: jest.fn((key: string, defaultValue?: unknown) => {
+              if (key === 'MAX_FILE_SIZE') return 10485760;
+              if (key === 'MAX_ATTACHMENTS_PER_TASK') return 20;
+              return defaultValue;
+            }),
+          },
+        },
+        {
+          provide: getDataSourceToken(),
+          useValue: {
+            transaction: jest.fn((cb) =>
+              cb({
+                findOne: jest.fn((entityClass, options) => {
+                  if (entityClass === Task) return tasksRepo.findOne!(options);
+                  if (entityClass === User) return usersRepo.findOne!(options);
+                  if (entityClass === Project) {
+                    const res = projectRepo.findOne!(options);
+                    if (res) return res;
+                    return Promise.resolve(new Project({ projectId: 1, status: ProjectStatus.ACTIVE }));
+                  }
+                  return tasksRepo.findOne!(options);
+                }),
+                find: jest.fn((entityClass, options) => {
+                  if (entityClass === Task) return tasksRepo.find!(options);
+                  return tasksRepo.find!(options);
+                }),
+                save: jest.fn().mockImplementation((clsOrEntity, entity) => {
+                  const toSave = entity || clsOrEntity;
+                  return tasksRepo.save!(toSave);
+                }),
+                create: jest.fn((_cls, dto) => dto),
+                remove: jest.fn().mockResolvedValue(undefined),
+                delete: jest.fn().mockResolvedValue(undefined),
+              }),
+            ),
+          },
+        },
       ],
     }).compile();
 
@@ -297,6 +374,238 @@ describe('TasksService (Persistence, Lifecycle, State Machine & Authorization)',
       commentRepo.findOne!.mockResolvedValue(comment);
 
       await expect(tasksService.updateComment(1, 10, 42, 'Content')).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('Task Reject Flow', () => {
+    it('throws NotFoundException when task does not exist', async () => {
+      tasksRepo.findOne!.mockResolvedValue(null);
+      await expect(
+        tasksService.reject(
+          999,
+          { reason: 'Missing details' },
+          new User({ userId: 1, role: UserRole.ADMIN }),
+        ),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('rejects task in IN_REVIEW back to IN_PROGRESS and saves reason as comment', async () => {
+      const task = new Task({
+        taskId: 1,
+        status: TaskStatus.IN_REVIEW,
+        submittedAt: new Date(),
+        assignedTo: new User({ userId: 10 }),
+      });
+      tasksRepo.findOne!.mockResolvedValue(task);
+
+      const admin = new User({ userId: 1, role: UserRole.ADMIN });
+      const result = await tasksService.reject(1, { reason: 'Please fix edge cases' }, admin);
+
+      expect(result.status).toBe(TaskStatus.IN_PROGRESS);
+      expect(result.submittedAt).toBeNull();
+    });
+
+    it('throws ConflictException if task is not in IN_REVIEW status', async () => {
+      const task = new Task({
+        taskId: 1,
+        status: TaskStatus.TODO,
+      });
+      tasksRepo.findOne!.mockResolvedValue(task);
+
+      const admin = new User({ userId: 1, role: UserRole.ADMIN });
+      await expect(
+        tasksService.reject(1, { reason: 'Invalid state' }, admin),
+      ).rejects.toThrow(ConflictException);
+    });
+  });
+
+  describe('Task Attachments', () => {
+    it('uploadAttachment throws NotFoundException when task not found', async () => {
+      tasksRepo.findOne!.mockResolvedValue(null);
+      await expect(
+        tasksService.uploadAttachment(
+          999,
+          { originalname: 'file.pdf', size: 100, buffer: Buffer.from('%PDF-1.4') } as Express.Multer.File,
+          new User({ userId: 1, role: UserRole.ADMIN }),
+        ),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('uploadAttachment throws PayloadTooLargeException if file exceeds limit', async () => {
+      const task = new Task({ taskId: 1, status: TaskStatus.IN_PROGRESS });
+      tasksRepo.findOne!.mockResolvedValue(task);
+
+      await expect(
+        tasksService.uploadAttachment(
+          1,
+          { originalname: 'big.pdf', size: 20000000, buffer: Buffer.from('%PDF-1.4') } as Express.Multer.File,
+          new User({ userId: 1, role: UserRole.ADMIN }),
+        ),
+      ).rejects.toThrow(PayloadTooLargeException);
+    });
+
+    it('uploadAttachment succeeds and returns attachment', async () => {
+      const task = new Task({ taskId: 1, status: TaskStatus.IN_PROGRESS });
+      tasksRepo.findOne!.mockResolvedValue(task);
+      attachmentRepo.findOne!.mockResolvedValue(new Attachment({ attachmentId: 1, originalName: 'doc.pdf' }));
+
+      const res = await tasksService.uploadAttachment(
+        1,
+        { originalname: 'doc.pdf', size: 1000, buffer: Buffer.from('%PDF-1.4 sample content') } as Express.Multer.File,
+        new User({ userId: 1, role: UserRole.ADMIN }),
+      );
+
+      expect(res.originalName).toBe('doc.pdf');
+      expect(storageService.put).toHaveBeenCalled();
+    });
+
+    it('getAttachmentForDownload throws NotFoundException if attachment not found', async () => {
+      const task = new Task({ taskId: 1, status: TaskStatus.IN_PROGRESS });
+      tasksRepo.findOne!.mockResolvedValue(task);
+      attachmentRepo.findOne!.mockResolvedValue(null);
+
+      await expect(
+        tasksService.getAttachmentForDownload(1, 999, new User({ userId: 1, role: UserRole.ADMIN })),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('deleteAttachment removes attachment and deletes from storage', async () => {
+      const task = new Task({ taskId: 1, status: TaskStatus.IN_PROGRESS });
+      tasksRepo.findOne!.mockResolvedValue(task);
+      attachmentRepo.findOne!.mockResolvedValue(new Attachment({ attachmentId: 1, storageKey: 'key-1' }));
+
+      const res = await tasksService.deleteAttachment(1, 1, new User({ userId: 1, role: UserRole.ADMIN }));
+      expect(res.message).toContain('deleted successfully');
+      expect(storageService.delete).toHaveBeenCalledWith('key-1');
+    });
+  });
+
+  describe('Task Pagination & Creation', () => {
+    it('findAll returns paginated envelope', async () => {
+      const mockQb = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        getCount: jest.fn().mockResolvedValue(0),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+      };
+      tasksRepo.createQueryBuilder!.mockReturnValue(mockQb as never);
+
+      const res = await tasksService.findAll({}, new User({ userId: 1, role: UserRole.ADMIN }));
+      expect(res.data).toEqual([]);
+      expect(res.meta.total).toBe(0);
+    });
+
+    it('create sets default priority and returns enriched task', async () => {
+      const task = new Task({
+        taskId: 10,
+        name: 'New Task',
+        priority: TaskPriority.MEDIUM,
+        status: TaskStatus.UNASSIGNED,
+        dependsOn: [],
+      });
+      tasksRepo.save!.mockResolvedValue(task);
+
+      const res = await tasksService.create({
+        name: 'New Task',
+        description: 'Desc',
+        startDate: new Date('2026-01-01'),
+        endDate: new Date('2026-01-10'),
+      });
+      expect(res.name).toBe('New Task');
+    });
+  });
+
+  describe('Task Dependencies & Deletion', () => {
+    it('setDependencies throws BadRequestException on self-dependency', async () => {
+      const task = new Task({ taskId: 1, projectId: 10 });
+      tasksRepo.findOne!.mockResolvedValue(task);
+
+      await expect(async () => {
+        await tasksService.setDependencies(1, { dependsOn: [1] }, new User({ userId: 1, role: UserRole.ADMIN }));
+      }).rejects.toThrow(BadRequestException);
+    });
+
+    it('setDependencies throws BadRequestException if task is standalone', async () => {
+      const standalone = new Task({ taskId: 1, projectId: null });
+      tasksRepo.findOne!.mockResolvedValue(standalone);
+
+      await expect(async () => {
+        await tasksService.setDependencies(1, { dependsOn: [2] }, new User({ userId: 1, role: UserRole.ADMIN }));
+      }).rejects.toThrow(BadRequestException);
+    });
+
+    it('setDependencies throws NotFoundException if dependency not found', async () => {
+      const task = new Task({ taskId: 1, projectId: 10 });
+      tasksRepo.findOne!.mockResolvedValue(task);
+      tasksRepo.find!.mockResolvedValue([]); // not found
+
+      await expect(async () => {
+        await tasksService.setDependencies(1, { dependsOn: [2] }, new User({ userId: 1, role: UserRole.ADMIN }));
+      }).rejects.toThrow(NotFoundException);
+    });
+
+    it('setDependencies sets dependencies successfully', async () => {
+      const task = new Task({ taskId: 1, projectId: 10 });
+      const depTask = new Task({ taskId: 2, projectId: 10 });
+      tasksRepo.findOne!.mockResolvedValue(task);
+      tasksRepo.find!
+        .mockResolvedValueOnce([depTask]) // dependency lookup
+        .mockResolvedValueOnce([task, depTask]); // project tasks for cycle detection
+      tasksRepo.save!.mockResolvedValue(new Task({ ...task, dependsOn: [depTask] }));
+
+      const res = await tasksService.setDependencies(
+        1,
+        { dependsOn: [2] },
+        new User({ userId: 1, role: UserRole.ADMIN }),
+      );
+      expect(res.dependsOn).toHaveLength(1);
+    });
+
+    it('remove throws 409 if other active tasks depend on it', async () => {
+      const task = new Task({ taskId: 1, projectId: 10 });
+      tasksRepo.findOne!.mockResolvedValue(task);
+      const mockQb = {
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getCount: jest.fn().mockResolvedValue(2),
+      };
+      tasksRepo.createQueryBuilder!.mockReturnValue(mockQb as never);
+
+      await expect(
+        tasksService.remove(1, new User({ userId: 1, role: UserRole.ADMIN })),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('remove soft-deletes task if no active dependents', async () => {
+      const task = new Task({ taskId: 1, projectId: 10 });
+      tasksRepo.findOne!.mockResolvedValue(task);
+      const mockQb = {
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getCount: jest.fn().mockResolvedValue(0),
+      };
+      tasksRepo.createQueryBuilder!.mockReturnValue(mockQb as never);
+
+      await tasksService.remove(1, new User({ userId: 1, role: UserRole.ADMIN }));
+      expect(tasksRepo.softDelete).toHaveBeenCalledWith(1);
+    });
+
+    it('comment adds a non-system comment', async () => {
+      commentRepo.create = jest.fn((dto) => dto as Comment);
+      commentRepo.save = jest.fn((c) => Promise.resolve({ ...c, commentId: 10 } as Comment));
+      commentRepo.findOne = jest.fn().mockResolvedValue(
+        new Comment({ commentId: 10, content: 'Great work', isSystem: false, task: new Task({ taskId: 1 }) }),
+      );
+
+      const res = await tasksService.comment(1, 2, 'Great work', true);
+      expect(res.isSystem).toBe(false);
+      expect(res.content).toBe('Great work');
     });
   });
 });

@@ -1,4 +1,5 @@
 import { NestFactory } from "@nestjs/core";
+import { NestExpressApplication } from "@nestjs/platform-express";
 import { AppModule } from "./app.module";
 import { ValidationPipe } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
@@ -6,16 +7,18 @@ import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 import { Logger } from "nestjs-pino";
 import helmet from "helmet";
 import cookieSession from "cookie-session";
-import { Express } from "express";
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true });
   const configService = app.get(ConfigService);
 
+  app.enableShutdownHooks();
   app.useLogger(app.get(Logger));
 
-  const expressApp = app.getHttpAdapter().getInstance() as Express;
-  expressApp.set("trust proxy", 1);
+  const trustProxy = configService.get<number>("TRUST_PROXY", 0);
+  app.set("trust proxy", trustProxy);
+  app.useBodyParser("json", { limit: "1mb" });
+  app.useBodyParser("urlencoded", { extended: true, limit: "1mb" });
 
   app.use(helmet());
 
@@ -25,13 +28,15 @@ async function bootstrap() {
     credentials: true,
   });
 
+  const cookieSecure = configService.get<boolean>("COOKIE_SECURE") ?? false;
+
   app.use(
     cookieSession({
       name: "session",
       keys: [configService.getOrThrow<string>("COOKIE_KEY")],
       maxAge: 24 * 60 * 60 * 1000,
       httpOnly: true,
-      secure: configService.get<string>("NODE_ENV") === "production",
+      secure: cookieSecure,
       sameSite: "lax",
     }),
   );
@@ -52,7 +57,7 @@ async function bootstrap() {
       type: "apiKey",
       in: "cookie",
       name: "session",
-      description: "Encrypted session cookie",
+      description: "Signed session cookie",
     })
     .build();
 

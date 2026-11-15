@@ -1,4 +1,5 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { ThrottlerGuard } from '@nestjs/throttler';
@@ -10,6 +11,7 @@ import { Repository, DataSource } from 'typeorm';
 import { AppModule } from '../src/app.module';
 import { User, UserRole } from '../src/users/entities/user.entity';
 import { AuthService } from '../src/auth/auth.service';
+import { hashPassword } from '../src/auth/password-hasher';
 
 export interface TestAppBundle {
   app: INestApplication<App>;
@@ -21,6 +23,8 @@ export async function createTestApp(): Promise<TestAppBundle> {
   const moduleFixture: TestingModule = await Test.createTestingModule({
     imports: [AppModule],
   })
+    .overrideProvider(APP_GUARD)
+    .useValue({ canActivate: () => true })
     .overrideGuard(ThrottlerGuard)
     .useValue({ canActivate: () => true })
     .compile();
@@ -29,7 +33,8 @@ export async function createTestApp(): Promise<TestAppBundle> {
   const configService = moduleFixture.get(ConfigService);
 
   const expressApp = app.getHttpAdapter().getInstance() as Express;
-  expressApp.set('trust proxy', 1);
+  const trustProxy = configService.get<number>('TRUST_PROXY', 1);
+  expressApp.set('trust proxy', trustProxy);
 
   app.use(
     cookieSession({
@@ -37,7 +42,7 @@ export async function createTestApp(): Promise<TestAppBundle> {
       keys: [configService.getOrThrow<string>('COOKIE_KEY')],
       maxAge: 24 * 60 * 60 * 1000,
       httpOnly: true,
-      secure: false,
+      secure: configService.get<boolean>('COOKIE_SECURE') ?? false,
       sameSite: 'lax',
     }),
   );
@@ -71,11 +76,33 @@ export async function closeTestApp(bundle: TestAppBundle): Promise<void> {
 export async function createAndSignInUser(
   app: INestApplication<App>,
   userRepo: Repository<User>,
-  authService: AuthService,
-  email: string,
-  role: UserRole = UserRole.EMPLOYEE,
-  name = 'Test User',
+  authServiceOrEmail: AuthService | string,
+  emailOrRole?: string | UserRole,
+  roleOrName?: UserRole | string,
+  possibleName?: string,
 ): Promise<{ user: User; cookies: string[] }> {
+  let email: string;
+  let role: UserRole = UserRole.EMPLOYEE;
+  let name = 'Test User';
+
+  if (typeof authServiceOrEmail === 'string') {
+    email = authServiceOrEmail;
+    if ((emailOrRole as UserRole) === UserRole.ADMIN || (emailOrRole as UserRole) === UserRole.EMPLOYEE) {
+      role = emailOrRole as UserRole;
+    }
+    if (typeof roleOrName === 'string') {
+      name = roleOrName;
+    }
+  } else {
+    email = emailOrRole as string;
+    if ((roleOrName as UserRole) === UserRole.ADMIN || (roleOrName as UserRole) === UserRole.EMPLOYEE) {
+      role = roleOrName as UserRole;
+    }
+    if (possibleName) {
+      name = possibleName;
+    }
+  }
+
   const isAdmin =
     email.toLowerCase() ===
     (process.env.ADMIN_EMAIL ?? 'admin@intraflow.dev').toLowerCase();
@@ -86,7 +113,7 @@ export async function createAndSignInUser(
   const existing = await userRepo.findOne({ where: { email: email.toLowerCase() } });
   let user: User;
   if (!existing) {
-    const hashedPassword = await authService.hashPassword(password);
+    const hashedPassword = await hashPassword(password);
     const created = userRepo.create({
       name,
       email: email.toLowerCase(),
