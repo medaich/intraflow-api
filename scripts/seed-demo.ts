@@ -10,13 +10,113 @@ import { TaskStatus, TaskPriority } from "../src/tasks/entities/task.entity";
 import { hashPassword } from "../src/auth/password-hasher";
 import { DataSource } from "typeorm";
 
+const DEMO_TASK_NAMES = [
+  "Base Architecture Setup",
+  "Database Indexing & Performance Tuning",
+  "Cache Layer Deployment",
+  "Security Policy Review",
+  "API Documentation Sync",
+  "Webhook Delivery Architecture",
+] as const;
+
+const DEMO_RESET_CONFIRMATION = "RESET_INTRAFLOW_DEMO_TASKS";
+
+async function resetDemoTasks(
+  dataSource: DataSource,
+  projectId: number,
+  alphaTeamId: number,
+): Promise<void> {
+  const projectRows = await dataSource.query(
+    "SELECT team_id, status FROM projects WHERE project_id = ? AND name = ? AND deleted_at IS NULL",
+    [projectId, "Intraflow NextGen Platform"],
+  );
+
+  if (projectRows.length !== 1 || Number(projectRows[0].team_id) !== Number(alphaTeamId)) {
+    throw new Error(
+      "Demo task reset refused: the target must be the Intraflow NextGen Platform project owned by Alpha Core.",
+    );
+  }
+
+  if (projectRows[0].status === "ARCHIVED") {
+    throw new Error("Demo task reset refused: the Intraflow NextGen Platform project is archived.");
+  }
+
+  const namePlaceholders = DEMO_TASK_NAMES.map(() => "?").join(", ");
+  const taskRows = await dataSource.query(
+    `SELECT task_id FROM tasks WHERE project_id = ? AND name IN (${namePlaceholders})`,
+    [projectId, ...DEMO_TASK_NAMES],
+  );
+  const taskIds = taskRows.map((row: { task_id: number | string }) => Number(row.task_id));
+
+  if (taskIds.length === 0) {
+    console.log("No existing demo tasks need to be reset.");
+    return;
+  }
+
+  const idPlaceholders = taskIds.map(() => "?").join(", ");
+  const externalDependents = await dataSource.query(
+    `SELECT DISTINCT dependent.task_id
+     FROM task_dependencies AS dependency
+     INNER JOIN tasks AS dependent ON dependent.task_id = dependency.task_id
+     WHERE dependency.depends_on_task_id IN (${idPlaceholders})
+       AND dependent.task_id NOT IN (${idPlaceholders})`,
+    [...taskIds, ...taskIds],
+  );
+
+  if (externalDependents.length > 0) {
+    throw new Error(
+      "Demo task reset refused: tasks outside the demo set depend on a demo task.",
+    );
+  }
+
+  const attachments = await dataSource.query(
+    `SELECT attachment_id FROM attachments WHERE task_id IN (${idPlaceholders}) LIMIT 1`,
+    taskIds,
+  );
+
+  if (attachments.length > 0) {
+    throw new Error(
+      "Demo task reset refused: remove file attachments from the demo tasks before resetting them.",
+    );
+  }
+
+  await dataSource.transaction(async (manager) => {
+    for (const taskId of taskIds) {
+      await manager.query(
+        "DELETE FROM task_dependencies WHERE task_id = ? OR depends_on_task_id = ?",
+        [taskId, taskId],
+      );
+    }
+    await manager.query(
+      `DELETE FROM tasks WHERE task_id IN (${idPlaceholders})`,
+      taskIds,
+    );
+  });
+
+  console.log(`Removed ${taskIds.length} matching demo task record(s) and their task history.`);
+}
+
 async function seedDemo() {
   if (process.env.NODE_ENV === "production") {
     console.error("Refusing to seed demo data in production environment (NODE_ENV=production).");
     process.exit(1);
   }
 
-  console.log("Starting idempotent demo data seeding...");
+  const resetDemoTasksRequested = process.argv.includes("--reset-demo-tasks");
+  if (
+    resetDemoTasksRequested &&
+    process.env.DEMO_SEED_RESET_CONFIRMATION !== DEMO_RESET_CONFIRMATION
+  ) {
+    throw new Error(
+      `Demo task reset requires DEMO_SEED_RESET_CONFIRMATION=${DEMO_RESET_CONFIRMATION}.`,
+    );
+  }
+
+  console.log(
+    resetDemoTasksRequested
+      ? "Starting demo seed with an explicit reset of the six demo tasks..."
+      : "Starting repeatable demo seed; existing task records will be preserved...",
+  );
   const app = await NestFactory.createApplicationContext(AppModule, { logger: false });
 
   const dataSource = app.get(DataSource);
@@ -145,9 +245,26 @@ async function seedDemo() {
   }
   const projectId = alphaProject.projectId ?? alphaProject.project_id;
 
+  if (Number(alphaProject.teamId ?? alphaProject.team_id) !== Number(alphaTeamId)) {
+    throw new Error(
+      "Demo seed refused: Intraflow NextGen Platform must belong to the Alpha Core team.",
+    );
+  }
+
+  if (resetDemoTasksRequested) {
+    await resetDemoTasks(dataSource, projectId, alphaTeamId);
+  }
+
   // 6. Tasks in every status + dependencies + reject flow
-  const devAlpha = demoUsers["dev.alpha@intraflow.dev"];
-  const modAlpha = demoUsers["mod.alpha@intraflow.dev"];
+  // Reload users with their membership relation loaded so policy checks succeed
+  const devAlpha = (await userRepo.findOne({
+    where: { userId: demoUsers["dev.alpha@intraflow.dev"].userId },
+    relations: ["membership"],
+  }))!;
+  const modAlpha = (await userRepo.findOne({
+    where: { userId: demoUsers["mod.alpha@intraflow.dev"].userId },
+    relations: ["membership"],
+  }))!;
 
   // Helper to find task by name in project
   async function findTask(name: string) {
