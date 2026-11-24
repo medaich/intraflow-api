@@ -48,12 +48,19 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://127.0.0.1:3000/health', (r) => { r.resume(); process.exit(r.statusCode === 200 ? 0 : 1); }).on('error', () => process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     env_file:
       - .env
     environment:
       NODE_ENV: production
       PORT: "3000"
       APP_URL: ${APP_URL:-http://localhost:3000}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
       MYSQL_HOST: mysql
       MYSQL_PORT: "3306"
       MYSQL_DATABASE: ${MYSQL_DATABASE:-intraflow}
