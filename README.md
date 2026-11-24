@@ -341,8 +341,3 @@ All demo accounts share the password: `DemoPassword123!`
 - **File Inspection Window**: Magic byte MIME detection and malicious tag detection (SVG/HTML scripts) are performed on the initial 1024 bytes of uploaded files.
 - **Dependency Audit Non-Blocking**: Automated dependency vulnerability scanning is not configured as a blocking gate in CI.
 
----
-
-## 📚 Further Documentation
-
-- [Frontend Integration & API Flow Guide](FRONTEND_API_GUIDE.md)
