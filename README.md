@@ -1,6 +1,6 @@
 # Intraflow API 🚀
 
-[![CI Pipeline](https://github.com/medaich/intraflow-api/blob/main/.github/workflows/ci.yml/badge.svg)](https://github.com/intraflow/intraflow-api/actions/workflows/ci.yml)
+[![CI Pipeline](https://github.com/medaich/intraflow-api/actions/workflows/ci.yml/badge.svg)](https://github.com/medaich/intraflow-api/actions/workflows/ci.yml)
 [![Node: >=22](https://img.shields.io/badge/node-%3E%3D22.0.0-brightgreen.svg)](https://nodejs.org)
 [![pnpm: ^9.0.0](https://img.shields.io/badge/pnpm-%5E9.0.0-orange.svg)](https://pnpm.io)
 
